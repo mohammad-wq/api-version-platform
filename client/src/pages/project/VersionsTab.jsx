@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api.js";
-import { useAction, useAsync } from "../../hooks.js";
+import { useAction, useAsync, usePersistentState } from "../../hooks.js";
 import { Avatar, Badge, EmptyState, ErrorBanner, JsonView, Modal, Notice, Skeleton, SkeletonList, formatBytes, formatDate, timeAgo } from "../../components/ui.jsx";
 import { Icon } from "../../components/icons.jsx";
 import { FindBar, findShortcut, useFind } from "../../components/find.jsx";

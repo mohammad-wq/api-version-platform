@@ -44,7 +44,10 @@ To type `composer avp` instead, add a script to your project's `composer.json`:
 ```json
 {
     "scripts": {
-        "avp": "vendor/bin/avp"
+        "avp": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php vendor/bin/avp"
+        ]
     }
 }
 ```
@@ -54,6 +57,8 @@ composer avp serve
 composer avp status
 composer avp -- version create v1.0.0 --note="First version"
 ```
+
+Keep the `disableProcessTimeout` line. Composer stops any script after 300 seconds by default, and without that line `composer avp serve` would shut the UI down after five minutes.
 
 Put `--` after `avp` whenever the command has options (anything starting with `--`). Without it, Composer takes the options for itself. Depending on your Composer version it either stops with `The "--note" option does not exist`, or silently drops the option. Running `vendor/bin/avp` directly never has this problem.
 
@@ -159,6 +164,11 @@ composer test
 `npm run build` (the hosted web build) is unaffected. Then commit, tag a new version (`git tag v1.2.0 && git push --tags`) and consumers run `composer update`. The version comes from the tag; `composer.json` has no `version` field, so there is nothing else to bump.
 
 ## Changelog
+
+### 1.1.1
+
+- Fix: the web UI showed a blank page (`usePersistentState is not defined`) on the Versions tab, which opens by default. The bundled UI is rebuilt. This also affected 1.0.5 and 1.1.0.
+- Docs: the Composer shortcut now disables Composer's 300-second script timeout, which otherwise stopped `composer avp serve` after five minutes.
 
 ### 1.1.0
 
