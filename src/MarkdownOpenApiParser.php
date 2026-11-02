@@ -26,7 +26,22 @@ final class MarkdownOpenApiParser
 
     private function convert(string $markdown): array
     {
+        $notUtf8 = preg_match('//u', $markdown) !== 1;
+        if ($notUtf8) {
+            // OpenAPI is JSON, which must be UTF-8. Read the file as Windows-1252 ("ANSI" in Windows editors).
+            $converted = function_exists('mb_convert_encoding') ? @mb_convert_encoding($markdown, 'UTF-8', 'Windows-1252') : null;
+            $markdown = is_string($converted) && preg_match('//u', $converted) === 1
+                ? $converted
+                : (string) preg_replace_callback('/[\x80-\xFF]/', static fn(array $m): string => chr(0xC0 | (ord($m[0]) >> 6)) . chr(0x80 | (ord($m[0]) & 0x3F)), $markdown);
+        }
         $lines = preg_split('/\r\n|\n|\r/', preg_replace('/^\xEF\xBB\xBF/', '', $markdown));
+        if ($notUtf8) {
+            $this->warnings[] = [
+                'code' => 'NOT_UTF8',
+                'message' => 'The document is not valid UTF-8, so it was read as Windows-1252. Save it as UTF-8 to be sure every character is kept.',
+                'lines' => [1, 1],
+            ];
+        }
         $blocks = $this->readBlocks($this->hideHtmlComments($lines));
         $sections = $this->buildSections($blocks);
         $this->sectionsForTag = $sections;
@@ -53,6 +68,14 @@ final class MarkdownOpenApiParser
             $operation = $this->toOperation($endpoint);
             $operation['operationId'] = $this->operationId($endpoint['method'], $endpoint['path'], $usedOperationIds);
             $method = strtolower($endpoint['method']);
+            if (!isset($paths[$endpoint['path']]) && preg_match('#(^|/)\.{1,2}(/|$)#', $endpoint['path'])) {
+                $this->warn(
+                    'DOT_SEGMENT_PATH',
+                    "{$endpoint['path']} contains a \".\" or \"..\" segment; clients may resolve it to a different URL.",
+                    [$endpoint['line'] ?? 1, $endpoint['line'] ?? 1],
+                    $endpoint,
+                );
+            }
             // OpenAPI keys operations by path+method, so a repeated table row would silently
             // overwrite the earlier one here and lose its detail. Say so instead.
             if (isset($paths[$endpoint['path']][$method])) {

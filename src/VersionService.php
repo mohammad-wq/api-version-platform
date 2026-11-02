@@ -8,6 +8,8 @@ use PDO;
 
 final class VersionService
 {
+    public const MAX_LABEL_LENGTH = 50;
+
     private PDO $pdo;
 
     public function __construct(private string $readmePath, Storage $storage)
@@ -20,7 +22,7 @@ final class VersionService
     public function status(): array
     {
         if (!is_file($this->readmePath) || !is_readable($this->readmePath)) {
-            return ['state' => 'missing', 'readme_path' => $this->readmePath, 'message' => 'README file is missing or unreadable.'];
+            return ['state' => 'missing', 'readme_path' => $this->readmePath, 'message' => "No API document found at {$this->readmePath}. Run `avp init` to create one from the template."];
         }
         $markdown = file_get_contents($this->readmePath);
         if ($markdown === false) {
@@ -28,7 +30,7 @@ final class VersionService
         }
         $parse = \MarkdownOpenApiParser::parse($markdown);
         if (($parse['statistics']['endpoints'] ?? 0) === 0) {
-            return ['state' => 'invalid', 'readme_path' => $this->readmePath, 'message' => 'No API endpoints were found.', 'warnings' => $parse['warnings']];
+            return ['state' => 'invalid', 'readme_path' => $this->readmePath, 'message' => "No API endpoints were found in {$this->readmePath}. See `avp template` for the format.", 'warnings' => $parse['warnings']];
         }
         $sourceHash = SourceHasher::hash($markdown);
         $latest = $this->latest();
@@ -47,10 +49,7 @@ final class VersionService
     /** @return array<string, mixed> */
     public function create(string $label, string $note = '', bool $allowUnchanged = false): array
     {
-        $label = trim($label);
-        if ($label === '') {
-            throw new \InvalidArgumentException('Version label is required.');
-        }
+        $label = self::label($label);
         if (!is_file($this->readmePath) || !is_readable($this->readmePath)) {
             throw new \RuntimeException("README file is missing or unreadable: {$this->readmePath}");
         }
@@ -138,10 +137,7 @@ final class VersionService
      */
     public function createFromOpenApi(string $label, string $note, array $openapi): array
     {
-        $label = trim($label);
-        if ($label === '') {
-            throw new \InvalidArgumentException('Version label is required.');
-        }
+        $label = self::label($label);
         $openapiJson = json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         $insert = $this->pdo->prepare('INSERT INTO versions (label, note, markdown, source_hash, openapi_json, openapi_hash, parser_warnings_json, parser_statistics_json, created_at)
             VALUES (:label, :note, NULL, NULL, :openapi_json, :openapi_hash, :warnings, :statistics, :created_at)');
@@ -166,7 +162,7 @@ final class VersionService
         $params = ['id' => $id, 'note' => $note !== '' ? $note : null];
         if ($label !== null && trim($label) !== '') {
             $fields[] = 'label = :label';
-            $params['label'] = trim($label);
+            $params['label'] = self::label($label);
         }
         if ($openapi !== null) {
             $openapiJson = json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
@@ -189,6 +185,20 @@ final class VersionService
         if ($stmt->rowCount() === 0) {
             throw new \OutOfBoundsException('Version not found.');
         }
+    }
+
+    /** A trimmed, non-empty label within the length limit; the CLI, the banner and imports share this rule. */
+    public static function label(string $label): string
+    {
+        $label = trim($label);
+        if ($label === '') {
+            throw new \InvalidArgumentException('Version label is required.');
+        }
+        $length = preg_match('//u', $label) === 1 ? (int) preg_match_all('/./us', $label) : strlen($label);
+        if ($length > self::MAX_LABEL_LENGTH) {
+            throw new \InvalidArgumentException('Version label is too long (' . self::MAX_LABEL_LENGTH . ' characters maximum).');
+        }
+        return $label;
     }
 
     /** The label after the newest one: a patch bump for vX.Y.Z labels, otherwise a "-next" suffix. */

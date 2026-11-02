@@ -75,7 +75,7 @@ final class LocalApi
     {
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
-        echo json_encode(['statusCode' => $status, 'message' => $message, 'data' => $data], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        echo json_encode(['statusCode' => $status, 'message' => $message, 'data' => $data], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }
 
@@ -85,6 +85,16 @@ final class LocalApi
         static $input = null;
         $input ??= json_decode((string) file_get_contents('php://input'), true);
         return is_array($input) ? $input : [];
+    }
+
+    /** A request field as a string. Arrays and objects are rejected instead of turning into "Array". */
+    private static function text(array $data, string $key, string $default = ''): string
+    {
+        $value = $data[$key] ?? $default;
+        if (!is_scalar($value)) {
+            throw new \InvalidArgumentException("{$key} must be a string");
+        }
+        return (string) $value;
     }
 
     // README working copy
@@ -115,7 +125,7 @@ final class LocalApi
      */
     private function parseReadme(): array
     {
-        $markdown = (string) ($this->input()['markdown'] ?? '');
+        $markdown = self::text($this->input(), 'markdown');
         if (trim($markdown) === '') {
             throw new \InvalidArgumentException('markdown is required');
         }
@@ -130,13 +140,11 @@ final class LocalApi
     private function saveReadme(): array
     {
         $data = $this->input();
-        $label = trim((string) ($data['label'] ?? ''));
+        $label = trim(self::text($data, 'label'));
         if ($label === '') {
             $label = $this->versions->nextLabel();
-        } elseif (strlen($label) > 50) {
-            throw new \InvalidArgumentException('Version label is too long (50 characters maximum)');
         }
-        $note = trim((string) ($data['note'] ?? ''));
+        $note = trim(self::text($data, 'note'));
         $created = $this->versions->create($label, $note);
         return $this->versionRow($this->versions->byId((int) $created['id']) ?? [], true);
     }
@@ -168,11 +176,11 @@ final class LocalApi
     private function updateProject(): array
     {
         $data = $this->input();
-        $name = trim((string) ($data['name'] ?? ''));
+        $name = trim(self::text($data, 'name'));
         if ($name === '') throw new \InvalidArgumentException('Project name is required');
         if (strlen($name) > 190) throw new \InvalidArgumentException('Project name is too long (190 characters maximum)');
         $this->setMetadata('project.name', $name);
-        $this->setMetadata('project.description', trim((string) ($data['description'] ?? '')));
+        $this->setMetadata('project.description', trim(self::text($data, 'description')));
         if (array_key_exists('environments', $data)) {
             $this->setMetadata('project.environments', json_encode($this->cleanEnvironments($data['environments']), JSON_UNESCAPED_SLASHES));
         }
@@ -198,9 +206,9 @@ final class LocalApi
         foreach (array_values($environments) as $index => $environment) {
             $label = 'Environment ' . ($index + 1);
             if (!is_array($environment)) throw new \InvalidArgumentException("{$label} must be an object");
-            $id = trim((string) ($environment['id'] ?? ''));
-            $name = trim((string) ($environment['name'] ?? ''));
-            $baseUrl = rtrim(trim((string) ($environment['baseUrl'] ?? '')), '/');
+            $id = trim(self::text($environment, 'id'));
+            $name = trim(self::text($environment, 'name'));
+            $baseUrl = rtrim(trim(self::text($environment, 'baseUrl')), '/');
             if ($id === '' || strlen($id) > 100) throw new \InvalidArgumentException("{$label} needs an id of at most 100 characters");
             if (isset($seenIds[$id])) throw new \InvalidArgumentException("{$label} reuses the id \"{$id}\"");
             if (strlen($name) > 80) throw new \InvalidArgumentException("{$label} name is too long (80 characters maximum)");
@@ -229,7 +237,7 @@ final class LocalApi
     /** @return array<string, mixed> */
     private function version(): array
     {
-        $version = isset($_GET['id']) ? $this->versions->byId((int) $_GET['id']) : $this->versions->get((string) ($_GET['version'] ?? ''));
+        $version = isset($_GET['id']) ? $this->versions->byId(is_string($_GET['id']) ? (int) $_GET['id'] : 0) : $this->versions->get(self::text($_GET, 'version'));
         if ($version === null) throw new \OutOfBoundsException('Version not found');
         return $this->versionRow($version, (int) $version['id'] === $this->versions->newestId());
     }
@@ -252,14 +260,14 @@ final class LocalApi
         if ($openapi !== null && (!is_array($openapi) || !isset($openapi['openapi']) || !is_array($openapi['paths'] ?? null))) {
             throw new \InvalidArgumentException('openapi must be an OpenAPI document with "openapi" and "paths"');
         }
-        $note = trim((string) ($data['note'] ?? ''));
-        $id = (int) ($data['id'] ?? 0);
+        $note = trim(self::text($data, 'note'));
+        $id = is_scalar($data['id'] ?? null) ? (int) $data['id'] : 0;
         if ($id > 0) {
-            $this->versions->update($id, isset($data['version']) ? (string) $data['version'] : null, $note, $openapi);
+            $this->versions->update($id, isset($data['version']) ? self::text($data, 'version') : null, $note, $openapi);
             $version = $this->versions->byId($id) ?? [];
         } else {
             if ($openapi === null) throw new \InvalidArgumentException('openapi specification is required');
-            $version = $this->versions->createFromOpenApi((string) ($data['version'] ?? ''), $note, $openapi);
+            $version = $this->versions->createFromOpenApi(self::text($data, 'version'), $note, $openapi);
         }
         return $this->versionRow($version, (int) $version['id'] === $this->versions->newestId());
     }
@@ -267,7 +275,8 @@ final class LocalApi
     /** @return array{id: int} */
     private function removeVersion(): array
     {
-        $id = (int) ($this->input()['id'] ?? $this->input()['version_id'] ?? 0);
+        $id = $this->input()['id'] ?? $this->input()['version_id'] ?? 0;
+        $id = is_scalar($id) ? (int) $id : 0;
         $this->versions->delete($id);
         return ['id' => $id];
     }
@@ -301,8 +310,8 @@ final class LocalApi
     private function execute(): array
     {
         $data = $this->input();
-        $method = strtoupper(trim((string) ($data['method'] ?? 'GET')));
-        $url = trim((string) ($data['url'] ?? ''));
+        $method = strtoupper(trim(self::text($data, 'method', 'GET')));
+        $url = trim(self::text($data, 'url'));
         $headers = is_array($data['headers'] ?? null) ? $data['headers'] : [];
         $body = $data['body'] ?? null;
         if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL) || !preg_match('#^https?://#i', $url)) {
@@ -314,9 +323,13 @@ final class LocalApi
 
         $headerLines = [];
         foreach ($headers as $name => $value) {
-            if (is_string($name) && !preg_match('/[\r\n]/', $name . (string) $value)) $headerLines[] = "{$name}: {$value}";
+            // A list of values is one header with comma-separated values (RFC 9110); other non-scalars are dropped.
+            if (is_array($value) && array_filter($value, 'is_scalar') === $value) $value = implode(', ', $value);
+            if (!is_string($name) || !is_scalar($value)) continue;
+            $value = is_bool($value) ? ($value ? 'true' : 'false') : (string) $value;
+            if (!preg_match('/[\r\n]/', $name . $value)) $headerLines[] = "{$name}: {$value}";
         }
-        $payload = $body === null ? null : (is_array($body) ? json_encode($body, JSON_UNESCAPED_SLASHES) : (string) $body);
+        $payload = $body === null ? null : (is_array($body) ? json_encode($body, JSON_UNESCAPED_SLASHES) : (is_bool($body) ? json_encode($body) : (string) $body));
         $context = stream_context_create(['http' => [
             'method' => $method,
             'header' => $headerLines,
@@ -359,7 +372,7 @@ final class LocalApi
             $this->pdo->prepare('INSERT INTO request_history (environment, method, url, request_headers, request_body, response_status, response_headers, response_body, duration_ms, created_at)
                 VALUES (:environment, :method, :url, :request_headers, :request_body, :response_status, :response_headers, :response_body, :duration_ms, :created_at)')
                 ->execute([
-                    'environment' => trim((string) ($data['environment'] ?? '')) ?: null,
+                    'environment' => trim(is_scalar($data['environment'] ?? null) ? (string) $data['environment'] : '') ?: null,
                     'method' => $method, 'url' => $url,
                     'request_headers' => json_encode($headers), 'request_body' => $payload,
                     'response_status' => $status, 'response_headers' => json_encode($responseHeaders),

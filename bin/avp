@@ -25,74 +25,135 @@ $usage = <<<'TXT'
 Local API Version Platform
 
 Usage:
-  avp init [--force]
-  avp template [--output=PATH] [--force]
+  avp init [--force]                 set up the project (config, .avp/, API.md from the template)
+  avp serve [--port=8080] [--host=127.0.0.1] [--open]
   avp status [--readme=PATH] [--json]
   avp version create <label> [--note=TEXT] [--readme=PATH] [--allow-unchanged]
   avp version list [--json]
-  avp version show <label> [--format=markdown|openapi|json]
-  avp serve [--host=127.0.0.1] [--port=8080] [--config=PATH]
+  avp version show <label> [--format=json|openapi|markdown]
+  avp template [--output=PATH] [--force]
+  avp --version
 
-`--config=PATH` may be used with every command that reads project settings.
+Running `avp` with no command starts the server. Every command accepts --config=PATH.
+Options take a value as --name=value or --name value.
 
 TXT;
 
+const AVP_VALUE_OPTIONS = ['note', 'readme', 'output', 'format', 'host', 'port', 'config'];
+const AVP_FLAG_OPTIONS = ['force', 'json', 'allow-unchanged', 'help', 'open', 'version'];
+
+function avpFail(string $message, int $code = 1): never
+{
+    fwrite(STDERR, $message . PHP_EOL);
+    exit($code);
+}
+
 $positionals = [];
 $options = [];
-foreach (array_slice($argv, 1) as $arg) {
-    if (preg_match('/^--([a-z-]+)(?:=(.*))?$/', $arg, $m)) $options[$m[1]] = $m[2] ?? true;
-    elseif ($arg === '-h' || $arg === '--help') $options['help'] = true;
-    else $positionals[] = $arg;
+$args = array_slice($argv, 1);
+for ($i = 0; $i < count($args); $i++) {
+    $arg = $args[$i];
+    if ($arg === '-h') { $options['help'] = true; continue; }
+    if ($arg === '-V') { $options['version'] = true; continue; }
+    if (!preg_match('/^--([A-Za-z][A-Za-z_-]*)(?:=(.*))?$/s', $arg, $m)) { $positionals[] = $arg; continue; }
+    $name = strtolower(str_replace('_', '-', $m[1]));
+    $value = $m[2] ?? null;
+    if (in_array($name, AVP_FLAG_OPTIONS, true)) {
+        if ($value !== null) avpFail("--{$name} does not take a value.");
+        $options[$name] = true;
+    } elseif (in_array($name, AVP_VALUE_OPTIONS, true)) {
+        if ($value === null) {
+            // `--note "First version"`: the value is the next argument.
+            $next = $args[$i + 1] ?? null;
+            if ($next === null || str_starts_with($next, '--')) avpFail("--{$name} needs a value, e.g. --{$name}=VALUE.");
+            $value = $next;
+            $i++;
+        }
+        $options[$name] = $value;
+    } else {
+        avpFail("Unknown option --{$name}. Run `avp --help` for the list of options.");
+    }
 }
 if (isset($options['help'])) { fwrite(STDOUT, $usage); exit(0); }
-
-function avpPath(string $root, string $path): string {
-    if (preg_match('#^(?:[A-Za-z]:[\\\\/]|/)#', $path)) return $path;
-    return $root . DIRECTORY_SEPARATOR . $path;
+if (isset($options['version'])) {
+    $installed = class_exists(\Composer\InstalledVersions::class) && \Composer\InstalledVersions::isInstalled('mohammad-wq/api-version-platform')
+        ? \Composer\InstalledVersions::getPrettyVersion('mohammad-wq/api-version-platform') : 'dev';
+    fwrite(STDOUT, "api-version-platform {$installed}\n");
+    exit(0);
 }
-function avpJson(mixed $value): void { fwrite(STDOUT, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL); }
+
+function avpJson(mixed $value): void
+{
+    fwrite(STDOUT, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) . PHP_EOL);
+}
 
 try {
     $command = $positionals[0] ?? 'serve';
     if ($command === 'init') {
-        $path = Server::init($projectRoot, isset($options['force']));
-        fwrite(STDOUT, "Created {$path}\nLocal state will be stored in {$projectRoot}" . DIRECTORY_SEPARATOR . ".avp\n");
+        $result = Server::init($projectRoot, isset($options['force']));
+        $document = $result['document'];
+        fwrite(STDOUT, "Created {$result['config']}\n");
+        fwrite(STDOUT, "Local state goes in {$result['state']} (ignored by git automatically)\n");
+        fwrite(STDOUT, $result['documentCreated']
+            ? "Created {$document} from the template: replace the example endpoints with your own.\n"
+            : "Using {$document} as the API document.\n");
+        fwrite(STDOUT, "\nNext: run `vendor/bin/avp serve` and open the URL it prints.\n");
         exit(0);
     }
     if ($command === 'template') {
         $template = file_get_contents(Server::packageRoot() . '/resources/templates/api-readme.md');
         if ($template === false) throw new RuntimeException('Bundled README template is missing.');
         if (!isset($options['output'])) { fwrite(STDOUT, $template); exit(0); }
-        $target = avpPath($projectRoot, (string) $options['output']);
+        if (trim((string) $options['output']) === '') avpFail('--output needs a file path.');
+        $target = Config::absolute($projectRoot, (string) $options['output']);
+        if (is_dir($target)) throw new RuntimeException("{$target} is a folder; give a file path such as API.md.");
         if (is_file($target) && !isset($options['force'])) throw new RuntimeException("{$target} already exists (use --force to overwrite).");
-        if (file_put_contents($target, $template) === false) throw new RuntimeException("Could not write {$target}.");
+        if (!is_dir(dirname($target))) throw new RuntimeException('Folder ' . dirname($target) . ' does not exist.');
+        if (@file_put_contents($target, $template) === false) throw new RuntimeException("Could not write {$target}.");
         fwrite(STDOUT, "Wrote {$target}\n"); exit(0);
     }
-    $configFile = isset($options['config']) ? realpath((string) $options['config']) ?: (string) $options['config'] : Config::locate($projectRoot);
+    if (!in_array($command, ['status', 'version', 'serve'], true)) {
+        fwrite(STDERR, "Unknown command \"{$command}\".\n\n{$usage}"); exit(1);
+    }
+
+    $configFile = isset($options['config']) ? (realpath((string) $options['config']) ?: (string) $options['config']) : Config::locate($projectRoot);
     $config = Config::load($configFile);
     $errors = Config::validate($config);
     if ($errors) throw new RuntimeException(implode("\n", $errors));
     $configRoot = $configFile === null ? $projectRoot : dirname($configFile);
-    $readme = avpPath($configRoot, (string) ($options['readme'] ?? $config['paths']['readme']));
-    $storage = avpPath($configRoot, (string) $config['paths']['storage']);
-    $service = new VersionService($readme, new Storage($storage));
+
+    if ($command === 'serve') {
+        $host = (string) ($options['host'] ?? $config['server']['host']);
+        $port = Config::port($options['port'] ?? $config['server']['port']);
+        if ($port === null) avpFail('--port must be a whole number from 1 to 65535.');
+        if (!in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) fwrite(STDERR, "Warning: this unauthenticated tool should not be exposed to an untrusted network.\n");
+        $findFreePort = !isset($options['port']) && !$config['server']['port_explicit'];
+        exit(Server::run($host, $port, $configFile, $configRoot, $findFreePort, isset($options['open'])));
+    }
+
+    $paths = Config::paths($config, $configRoot, isset($options['readme']) ? (string) $options['readme'] : null);
+    $readme = $paths['readme'];
+    $service = new VersionService($readme, new Storage($paths['storage']));
 
     if ($command === 'status') {
         $status = $service->status();
         if (isset($options['json'])) avpJson($status); else fwrite(STDOUT, strtoupper($status['state']) . ': ' . ($status['message'] ?? $readme) . PHP_EOL);
         exit($status['state'] === 'modified' ? 2 : ($status['state'] === 'clean' || $status['state'] === 'uninitialized' ? 0 : 1));
     }
-    if ($command === 'version' && ($positionals[1] ?? '') === 'create') {
-        $label = (string) ($positionals[2] ?? '');
+
+    $sub = $positionals[1] ?? '';
+    if ($sub === 'create') {
+        $label = VersionService::label((string) ($positionals[2] ?? ''));
         // Detect the duplicate before the INSERT so the CLI speaks the same message the API answers with.
         if ($service->get($label) !== null) throw new RuntimeException("A version with label {$label} already exists.");
         $result = $service->create($label, (string) ($options['note'] ?? ''), isset($options['allow-unchanged']));
         avpJson($result); exit(0);
     }
-    if ($command === 'version' && ($positionals[1] ?? '') === 'list') {
+    if ($sub === 'list') {
         $versions = $service->all();
         if (isset($options['json'])) { avpJson($versions); exit(0); }
-        $newest = $versions ? (int) $versions[0]['id'] : null;
+        if ($versions === []) { fwrite(STDERR, "No versions yet. Create one with `avp version create v1.0.0`.\n"); exit(0); }
+        $newest = (int) $versions[0]['id'];
         foreach ($versions as $version) {
             $warnings = $version['warnings'] ?? [];
             fwrite(STDOUT, implode('  ', array_filter([
@@ -105,10 +166,13 @@ try {
         }
         exit(0);
     }
-    if ($command === 'version' && ($positionals[1] ?? '') === 'show') {
-        $version = $service->get((string) ($positionals[2] ?? ''));
-        if ($version === null) throw new RuntimeException('Version not found.');
-        $format = $options['format'] ?? 'json';
+    if ($sub === 'show') {
+        $format = (string) ($options['format'] ?? 'json');
+        if (!in_array($format, ['json', 'openapi', 'markdown'], true)) avpFail("Unknown --format \"{$format}\"; use json, openapi or markdown.");
+        $label = trim((string) ($positionals[2] ?? ''));
+        if ($label === '') avpFail('Give the label of the version to show, e.g. `avp version show v1.0.0`.');
+        $version = $service->get($label);
+        if ($version === null) throw new RuntimeException("Version {$label} not found. Run `avp version list` to see the labels.");
         if ($format === 'markdown') {
             if ($version['markdown'] === null) throw new RuntimeException('This version was imported as OpenAPI and has no Markdown source.');
             fwrite(STDOUT, $version['markdown']);
@@ -116,15 +180,7 @@ try {
         else avpJson($version);
         exit(0);
     }
-    if ($command === 'serve') {
-        $host = (string) ($options['host'] ?? $config['server']['host']);
-        $port = (int) ($options['port'] ?? $config['server']['port']);
-        if ($host !== '127.0.0.1' && $host !== 'localhost') fwrite(STDERR, "Warning: this unauthenticated tool should not be exposed to an untrusted network.\n");
-        // The "running at" line is printed by Server::run(), after the server's port is reachable —
-        // a blocked port must not be announced as up.
-        exit(Server::run($host, $port, $configFile));
-    }
-    fwrite(STDERR, "Unknown command.\n\n{$usage}"); exit(1);
+    fwrite(STDERR, ($sub === '' ? "Missing subcommand for `version`." : "Unknown subcommand \"version {$sub}\".") . "\n\n{$usage}"); exit(1);
 } catch (Throwable $e) {
     if ($e instanceof \PDOException && $e->getCode() === '23000') {
         $e = new RuntimeException('A version with this label already exists.');

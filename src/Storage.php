@@ -15,12 +15,33 @@ final class Storage
     public function __construct(string $databasePath)
     {
         $directory = dirname($databasePath);
-        if (!is_dir($directory) && !mkdir($directory, 0777, true) && !is_dir($directory)) {
-            throw new \RuntimeException("Could not create storage directory: {$directory}");
+        if (!is_dir($directory)) {
+            if (file_exists($directory) || !@mkdir($directory, 0777, true) && !is_dir($directory)) {
+                throw new \RuntimeException("Could not create storage directory: {$directory}");
+            }
+            self::ignoreInGit($directory);
         }
-        $this->pdo = new PDO('sqlite:' . $databasePath, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-        $this->pdo->exec('PRAGMA foreign_keys = ON');
-        $this->migrate();
+        try {
+            $this->pdo = new PDO('sqlite:' . $databasePath, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $this->pdo->exec('PRAGMA foreign_keys = ON');
+            // The CLI and the web server may write at the same time; wait for the lock instead of failing.
+            $this->pdo->exec('PRAGMA busy_timeout = 5000');
+            $this->migrate();
+        } catch (\PDOException $e) {
+            throw new \RuntimeException("Could not open the version database {$databasePath}: {$e->getMessage()}", 0, $e);
+        }
+    }
+
+    /**
+     * Makes a state directory the package created ignore itself, so users never have to edit .gitignore.
+     * Only called for directories this package creates — never for an existing folder such as the project root.
+     */
+    public static function ignoreInGit(string $directory): void
+    {
+        $file = rtrim($directory, '/\\') . DIRECTORY_SEPARATOR . '.gitignore';
+        if (!file_exists($file)) {
+            @file_put_contents($file, "# Local API Version Platform state (created automatically).\n*\n");
+        }
     }
 
     public function pdo(): PDO

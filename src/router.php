@@ -13,6 +13,10 @@ require_once __DIR__ . '/Storage.php';
 require_once __DIR__ . '/VersionService.php';
 require_once __DIR__ . '/LocalApi.php';
 
+// Errors go to the server log, never into a response body where they would break the JSON the UI reads.
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
+
 $uiDir = realpath(__DIR__ . '/../resources/ui');
 $path = rawurldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/');
 
@@ -23,13 +27,11 @@ function avpServices(): array
     $config = Config::load($configFile);
     $errors = Config::validate($config);
     if ($errors) throw new RuntimeException(implode(' ', $errors));
-    $root = $configFile ? dirname($configFile) : getcwd();
-    $readme = $config['paths']['readme'];
-    $storagePath = $config['paths']['storage'];
-    if (!preg_match('#^(?:[A-Za-z]:[\\\\/]|/)#', $readme)) $readme = $root . DIRECTORY_SEPARATOR . $readme;
-    if (!preg_match('#^(?:[A-Za-z]:[\\\\/]|/)#', $storagePath)) $storagePath = $root . DIRECTORY_SEPARATOR . $storagePath;
-    $storage = new Storage($storagePath);
-    return [new VersionService($readme, $storage), $storage, $root, $readme];
+    // Same root as the CLI: the config file's folder, else the project root the CLI passed down.
+    $root = $configFile ? dirname($configFile) : (getenv(Config::ROOT_ENV) ?: getcwd());
+    $paths = Config::paths($config, $root);
+    $storage = new Storage($paths['storage']);
+    return [new VersionService($paths['readme'], $storage), $storage, $root, $paths['readme']];
 }
 
 /** The API is unauthenticated, so only same-machine pages may call it. */

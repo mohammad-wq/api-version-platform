@@ -1,5 +1,6 @@
 # Keep maintainer tooling out of `composer require` dist archives
 /scripts export-ignore
+/tests export-ignore
 /client export-ignore
 /legacy export-ignore
 /REQUIREMENTS_AND_WORK.md export-ignore
