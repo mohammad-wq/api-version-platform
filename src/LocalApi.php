@@ -75,6 +75,8 @@ final class LocalApi
     {
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
+        // Versions change underneath the UI (CLI saves, other tabs); a cached list would show stale APIs.
+        header('Cache-Control: no-store');
         echo json_encode(['statusCode' => $status, 'message' => $message, 'data' => $data], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         exit;
     }

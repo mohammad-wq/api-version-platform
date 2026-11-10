@@ -138,7 +138,8 @@ export default function DiffView({ project, comparison, onClose, reloadProject }
     () => Promise.all([api.getVersion(from.id), api.getVersion(to.id)]),
     [from.id, to.id],
   );
-  const versions = useAsync(() => api.getVersions(project.id), [project.id]);
+  // Only the latest version can be sent to; take it from the live project so a newer upload locks this one.
+  const latestVersionId = (project.versions.find((version) => version.isLatest) ?? project.versions[0])?.id;
   const newerSpec = specs.data?.[1]?.openapiJson;
   const newerEndpoints = useMemo(() => [...operationsForSpec(newerSpec ?? {}).values()], [newerSpec]);
   const session = useTestSession(project, newerSpec, newerEndpoints, api.updateEnvironments);
@@ -276,7 +277,6 @@ export default function DiffView({ project, comparison, onClose, reloadProject }
 
       {specs.loading && !specs.data && <SkeletonList rows={5} height={52} label="Loading APIs from both versions" />}
       <ErrorBanner error={specs.error} />
-      <ErrorBanner error={versions.error} />
 
       {specs.data && grouped.map(([tag, items]) => {
         const collapsed = collapsedTags.includes(tag);
@@ -301,7 +301,7 @@ export default function DiffView({ project, comparison, onClose, reloadProject }
                   to={to}
                   project={runtimeProject}
                   apiToken={apiToken}
-                  latestVersionId={versions.data?.[0]?.id}
+                  latestVersionId={latestVersionId}
                 />
               );
             })}

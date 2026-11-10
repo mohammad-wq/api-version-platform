@@ -56,11 +56,12 @@ To type `composer avp` instead, add a script to your project's `composer.json`:
 composer avp serve
 composer avp status
 composer avp -- version create v1.0.0 --note="First version"
+composer avp -- template --output=API.md --force
 ```
 
 Keep the `disableProcessTimeout` line. Composer stops any script after 300 seconds by default, and without that line `composer avp serve` would shut the UI down after five minutes.
 
-Put `--` after `avp` whenever the command has options (anything starting with `--`). Without it, Composer takes the options for itself. Depending on your Composer version it either stops with `The "--note" option does not exist`, or silently drops the option. Running `vendor/bin/avp` directly never has this problem.
+Put `--` after `avp` whenever the command has options (anything starting with `--`). Without it, Composer takes the options for itself. Depending on your Composer version it either stops with `The "--note" option does not exist`, or silently drops the option. For example, `composer avp template --output=API.md` loses `--output`, so the template is printed to the terminal instead of being written to `API.md`. Running `vendor/bin/avp` directly never has this problem.
 
 ## CLI
 
@@ -95,7 +96,7 @@ Line-ending (CRLF/LF) and UTF-8 BOM differences do not count as changes. A docum
 ### Troubleshooting
 
 - **`vendor/bin/avp` is not recognized.** In `cmd.exe`, use `vendor\bin\avp`. In PowerShell, `.\vendor\bin\avp` works too.
-- **A Composer script ignores your options or says `The "--output" option does not exist`.** Put `--` after the script name: `composer avp -- template --output=API.md`.
+- **A Composer script ignores your options (e.g. `composer avp template --output=...` prints the template instead of writing the file) or says `The "--output" option does not exist`.** Put `--` after the script name: `composer avp -- template --output=API.md`.
 - **`Command "avp" is not defined.`** Your project's `composer.json` has no `avp` script. Add it as shown above, or run `vendor/bin/avp` directly.
 - **`MISSING: No API document found`.** Run `vendor/bin/avp init` to create `API.md` from the template, or point `paths.readme` in `avp.config.php` at your file.
 

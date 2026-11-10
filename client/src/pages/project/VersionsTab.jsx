@@ -537,8 +537,9 @@ function VersionViewer({ versionId, canEdit, onChanged, onDeleted, onClose }) {
   );
 }
 
-export default function VersionsTab({ project, can, reloadProject, goToTab }) {
-  const versions = useAsync(() => api.getVersions(project.id), [project.id]);
+export default function VersionsTab({ project, can, reloadProject, revision }) {
+  // Reloads when versions change anywhere (CLI, another tab, a collaborator), not just on mount.
+  const versions = useAsync(() => api.getVersions(project.id), [project.id, revision]);
   const [viewing, setViewing] = usePersistentState(`ver.${project.id}.viewing`, null);
   const [from, setFrom] = usePersistentState(`ver.${project.id}.from`, "");
   const [to, setTo] = usePersistentState(`ver.${project.id}.to`, "");
@@ -585,6 +586,15 @@ export default function VersionsTab({ project, can, reloadProject, goToTab }) {
       setTo(String(from));
     }
   }, [versions.data, indexById, from, to]);
+
+  // The open JSON viewer is remembered across reloads; close it once its version is gone.
+  useEffect(() => {
+    if (versions.data && viewing != null && !indexById.has(String(viewing))) setViewing(null);
+  }, [versions.data, indexById, viewing, setViewing]);
+  // Likewise a shown comparison loses its meaning when either side is deleted.
+  useEffect(() => {
+    if (versions.data && comparison && !(indexById.has(String(comparison.from.id)) && indexById.has(String(comparison.to.id)))) setComparison(null);
+  }, [versions.data, indexById, comparison, setComparison]);
 
   const onImported = () => {
     setComparison(null);

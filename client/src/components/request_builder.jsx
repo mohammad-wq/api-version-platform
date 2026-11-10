@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTesterClient } from "./tester_client.jsx";
 import { maskSecretRows, maskSecrets, maskSecretsInJson, useAction, usePersistentState, useSessionState } from "../hooks.js";
 import { Badge, ErrorBanner, MethodBadge, Notice, formatBytes } from "./ui.jsx";
@@ -79,7 +79,8 @@ export function RequestBuilder({ project, apiToken, endpoint, locked = false, lo
   // (secret-looking query values and body fields are blanked before they are saved).
   const [draft, setDraft] = usePersistentState(
     `test.${project.id}.req.${endpointId}`,
-    { params: {}, qvalues: {}, hvalues: {}, mvalues: {}, extra: [], query: [], body: exampleBody },
+    // `sample` is the example the body started from, so an untouched body can follow a newer version's example.
+    { params: {}, qvalues: {}, hvalues: {}, mvalues: {}, extra: [], query: [], body: exampleBody, sample: exampleBody },
     {
       sanitize: (d) => {
         // Purge the legacy headers list: it used to live here (masked), but header edits
@@ -93,10 +94,19 @@ export function RequestBuilder({ project, apiToken, endpoint, locked = false, lo
           extra: maskSecretRows(d.extra ?? []),
           query: maskSecretRows(d.query),
           body: maskSecretsInJson(d.body, d.body),
+          // Masked the same way as the body, so an untouched body still equals it after a reload.
+          ...(d.sample !== undefined && { sample: maskSecretsInJson(d.sample, d.sample) }),
         };
       },
     },
   );
+  // The draft outlives the version it was made from. When the documented example changes (a new latest
+  // version), an untouched body takes the new example; a body the user edited is left alone.
+  // Drafts saved before `sample` existed are treated as edited ("Reset to example" still works).
+  useEffect(() => {
+    if (draft.sample === undefined || draft.sample === exampleBody) return;
+    setDraft((d) => (d.body === d.sample ? { ...d, body: exampleBody, sample: exampleBody } : { ...d, sample: exampleBody }));
+  }, [exampleBody, draft.sample, setDraft]);
   const { params, query, body } = draft;
   // Custom request headers are session-persistent: they survive reloads with this tab
   // (nothing is written to disk, so tokens and API keys entered here never touch localStorage).

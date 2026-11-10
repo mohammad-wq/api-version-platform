@@ -12,7 +12,7 @@ const POLL_MS = 10000;
  * The next version number is a suggestion, not a lock: the field is editable, like the version field in the
  * "Add a new version" form.
  */
-export default function ReadmeSyncBanner({ onSaved }) {
+export default function ReadmeSyncBanner({ onSaved, revision }) {
   const [status, setStatus] = useState(null);
   const [label, setLabel] = useState("");
   const [labelTouched, setLabelTouched] = useState(false);
@@ -30,6 +30,10 @@ export default function ReadmeSyncBanner({ onSaved }) {
       window.removeEventListener("focus", check);
     };
   }, [check]);
+  // A version saved elsewhere (e.g. `avp version create`) can clear or change "changed since": re-check at once.
+  useEffect(() => {
+    if (revision != null) check();
+  }, [revision, check]);
 
   // Put a newly suggested number into the field once, but never put it back after the author edited or
   // cleared the field.

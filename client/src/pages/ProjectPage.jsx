@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { useAuth } from "../auth.jsx";
@@ -22,6 +22,60 @@ const TABS = [
   { id: "members", label: "Collaborators", icon: "users", count: "members" },
 ];
 
+
+/**
+ * Identifies the project's version list: changes when a version is added, deleted, renamed, re-pointed
+ * as latest, or has its OpenAPI document edited. Tabs reload their version-derived data when it changes.
+ */
+export function versionSignature(project) {
+  return (project?.versions ?? [])
+    .map((version) => `${version.id}:${version.versionNumber}:${version.content_hash ?? ""}:${version.isLatest ? 1 : 0}`)
+    .join("|");
+}
+
+// Local mode reads one SQLite file on this machine, so it can be checked often; the hosted server less so.
+const WATCH_MS = { local: 4000, hosted: 30000 };
+
+/**
+ * Versions can be created outside this page: `avp version create` in a terminal, another browser tab,
+ * or a collaborator. Checks the project while the page is visible (on an interval, and when the window
+ * regains focus) and calls `onChange` when its versions differ from the ones on screen.
+ */
+function useVersionWatch(projectId, signature, onChange) {
+  const current = useRef(signature);
+  current.current = signature;
+  const callback = useRef(onChange);
+  callback.current = onChange;
+  const loaded = signature != null;
+
+  useEffect(() => {
+    if (!loaded) return undefined;
+    let stopped = false;
+    let inFlight = false;
+    const check = async () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        const fresh = await api.getProject(projectId);
+        if (!stopped && versionSignature(fresh) !== current.current) callback.current();
+      } catch {
+        /* offline or the server restarted: the next check tries again */
+      } finally {
+        inFlight = false;
+      }
+    };
+    const onVisible = () => document.visibilityState === "visible" && check();
+    const timer = setInterval(check, mode.local ? WATCH_MS.local : WATCH_MS.hosted);
+    window.addEventListener("focus", check);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", check);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [projectId, loaded]);
+}
 
 function ProjectSkeleton() {
   return (
@@ -73,9 +127,12 @@ export default function ProjectPage() {
   const remove = useAction();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [editing, setEditing] = useState(false);
-  const [syncedAt, setSyncedAt] = useState(0); // remounts the tabs after a README version is saved
   const [menuOpen, setMenuOpen, menuRef] = usePopover();
   useCrumb(project.data?.name);
+  // Every tab that shows version-derived data (endpoints, the version list) reloads when this changes,
+  // without remounting, so open endpoints, filters and in-progress requests stay where they are.
+  const revision = project.data ? versionSignature(project.data) : null;
+  useVersionWatch(projectId, revision, project.reload);
 
   if (project.loading && !project.data) return <ProjectSkeleton />;
   if (project.error) {
@@ -115,7 +172,7 @@ export default function ProjectPage() {
     if (ok) navigate("/");
   };
 
-  const tabProps = { project: data, role, can, reloadProject: project.reload };
+  const tabProps = { project: data, role, can, reloadProject: project.reload, revision };
 
   return (
     <>
@@ -231,12 +288,7 @@ export default function ProjectPage() {
       <ErrorBanner error={remove.error} />
 
       {mode.local && (
-        <ReadmeSyncBanner
-          onSaved={() => {
-            project.reload();
-            setSyncedAt(Date.now());
-          }}
-        />
+        <ReadmeSyncBanner revision={revision} onSaved={() => project.reload()} />
       )}
 
       <div className="project-layout">
@@ -250,7 +302,7 @@ export default function ProjectPage() {
           ))}
         </nav>
 
-        <section key={syncedAt} className="project-content" aria-label={visibleTabs.find((t) => t.id === tab)?.label}>
+        <section className="project-content" aria-label={visibleTabs.find((t) => t.id === tab)?.label}>
           {tab === "versions" && <VersionsTab {...tabProps} goToTab={selectTab} />}
           {tab === "test" && <TestTab {...tabProps} goToTab={selectTab} />}
           {tab === "history" && <HistoryTab {...tabProps} />}

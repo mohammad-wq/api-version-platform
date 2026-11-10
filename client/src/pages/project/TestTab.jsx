@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api.js";
 import { useAsync, usePersistentState } from "../../hooks.js";
-import { EmptyState, ErrorBanner, MethodBadge, SkeletonList } from "../../components/ui.jsx";
+import { EmptyState, ErrorBanner, MethodBadge, Notice, SkeletonList } from "../../components/ui.jsx";
 import { Icon } from "../../components/icons.jsx";
 import { OperationNotes, RequestBuilder } from "../../components/request_builder.jsx";
 import EnvironmentSwitcher from "../../components/EnvironmentSwitcher.jsx";
@@ -66,10 +66,34 @@ function useToolbarHeight() {
   return [containerRef, toolbarRef];
 }
 
+/**
+ * Remembers which version the endpoint list was built from and, when a live reload swaps it for another
+ * (or for an edited copy of the same one), returns a dismissible message saying so.
+ */
+function useVersionUpdateNotice(version) {
+  const shown = useRef(null);
+  const [notice, setNotice] = useState(null);
+  useEffect(() => {
+    if (!version) return;
+    const previous = shown.current;
+    shown.current = version;
+    if (!previous) return;
+    if (previous.id !== version.id) {
+      setNotice({ text: `The latest version is now ${version.versionNumber} (was ${previous.versionNumber}); the endpoints below were reloaded.` });
+    } else if (previous.content_hash !== version.content_hash) {
+      setNotice({ text: `${version.versionNumber} was edited; its endpoints were reloaded.` });
+    }
+  }, [version]);
+  return { notice, dismiss: () => setNotice(null) };
+}
+
 /** The endpoint list and request forms for one project API. */
-export function Tester({ project, reloadProject, goToTab }) {
-  const endpoints = useAsync(() => api.getTestableEndpoints(project.id), [project.id]);
+export function Tester({ project, reloadProject, goToTab, revision }) {
+  // `revision` changes whenever the project's versions do (a new upload, a CLI save, an edit), so the
+  // endpoint list always follows the current latest version instead of the one loaded on mount.
+  const endpoints = useAsync(() => api.getTestableEndpoints(project.id), [project.id, revision]);
   const list = endpoints.data?.endpoints ?? NO_ENDPOINTS;
+  const versionUpdate = useVersionUpdateNotice(endpoints.data?.version);
   const session = useTestSession(project, endpoints.data?.version?.openapiJson, list, api.updateEnvironments);
   const { active, runtimeProject, apiToken, tokenState } = session;
   const [managerFor, setManagerFor] = useState(null);
@@ -275,6 +299,11 @@ export function Tester({ project, reloadProject, goToTab }) {
       </div>
 
       <div className="test-body">
+        {versionUpdate.notice && (
+          <Notice kind="info" onDismiss={versionUpdate.dismiss}>
+            {versionUpdate.notice.text}
+          </Notice>
+        )}
         {activeUrlError && (
           <p className="env-inline-hint">
             <Icon name="globe" />
@@ -399,6 +428,6 @@ export function Tester({ project, reloadProject, goToTab }) {
   );
 }
 
-export default function TestTab({ project, reloadProject, goToTab }) {
-  return <Tester key={project.id} project={project} reloadProject={reloadProject} goToTab={goToTab} />;
+export default function TestTab({ project, reloadProject, goToTab, revision }) {
+  return <Tester key={project.id} project={project} reloadProject={reloadProject} goToTab={goToTab} revision={revision} />;
 }
