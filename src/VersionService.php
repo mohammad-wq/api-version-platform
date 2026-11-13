@@ -73,6 +73,7 @@ final class VersionService
         $createdAt = gmdate('c');
 
         // One row: the baseline is the newest version with a source hash, so this insert also advances it.
+        $this->assertLabelFree($label);
         $insert = $this->pdo->prepare('INSERT INTO versions (label, note, markdown, source_hash, openapi_json, openapi_hash, parser_warnings_json, parser_statistics_json, created_at)
             VALUES (:label, :note, :markdown, :source_hash, :openapi_json, :openapi_hash, :warnings, :statistics, :created_at)');
         $insert->execute([
@@ -104,7 +105,8 @@ final class VersionService
         $stmt->execute(['label' => $label]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
         if ($row !== null) {
-            $row['openapi'] = json_decode($row['openapi_json'], true);
+            // Objects, not arrays: an array decode turns every empty object `{}` into `[]` when served.
+            $row['openapi'] = json_decode($row['openapi_json']);
             $row['warnings'] = json_decode($row['parser_warnings_json'], true);
             $row['statistics'] = json_decode($row['parser_statistics_json'], true);
             unset($row['openapi_json'], $row['parser_warnings_json'], $row['parser_statistics_json']);
@@ -135,10 +137,11 @@ final class VersionService
      * @param array<string, mixed> $openapi
      * @return array<string, mixed>
      */
-    public function createFromOpenApi(string $label, string $note, array $openapi): array
+    public function createFromOpenApi(string $label, string $note, array $openapi, ?string $openapiJson = null): array
     {
         $label = self::label($label);
-        $openapiJson = json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $openapiJson ??= json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $this->assertLabelFree($label);
         $insert = $this->pdo->prepare('INSERT INTO versions (label, note, markdown, source_hash, openapi_json, openapi_hash, parser_warnings_json, parser_statistics_json, created_at)
             VALUES (:label, :note, NULL, NULL, :openapi_json, :openapi_hash, :warnings, :statistics, :created_at)');
         $insert->execute([
@@ -156,16 +159,17 @@ final class VersionService
      *
      * @param array<string, mixed>|null $openapi
      */
-    public function update(int $id, ?string $label, string $note, ?array $openapi): void
+    public function update(int $id, ?string $label, string $note, ?array $openapi, ?string $openapiJson = null): void
     {
         $fields = ['note = :note'];
         $params = ['id' => $id, 'note' => $note !== '' ? $note : null];
         if ($label !== null && trim($label) !== '') {
             $fields[] = 'label = :label';
             $params['label'] = self::label($label);
+            $this->assertLabelFree($params['label'], $id);
         }
         if ($openapi !== null) {
-            $openapiJson = json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $openapiJson ??= json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
             $fields[] = 'openapi_json = :openapi_json';
             $fields[] = 'openapi_hash = :openapi_hash';
             $params['openapi_json'] = $openapiJson;
@@ -188,6 +192,19 @@ final class VersionService
     }
 
     /** A trimmed, non-empty label within the length limit; the CLI, the banner and imports share this rule. */
+    /**
+     * Labels are unique per project regardless of case ("v1.0.0" and "V1.0.0" are the same version),
+     * as in the web UI, the hosted backend and the npm package.
+     */
+    private function assertLabelFree(string $label, int $exceptId = 0): void
+    {
+        $stmt = $this->pdo->prepare('SELECT 1 FROM versions WHERE lower(label) = lower(:label) AND id <> :id');
+        $stmt->execute(['label' => $label, 'id' => $exceptId]);
+        if ($stmt->fetchColumn()) {
+            throw new \OverflowException("Version '{$label}' already exists.");
+        }
+    }
+
     public static function label(string $label): string
     {
         $label = trim($label);
@@ -202,27 +219,11 @@ final class VersionService
     }
 
     /** The label after the newest one: a patch bump for vX.Y.Z labels, otherwise a "-next" suffix. */
+    /** Same rule as the web UI and the npm package (see VersionNumber). */
     public function nextLabel(): string
     {
-        $current = $this->pdo->query('SELECT label FROM versions ORDER BY id DESC LIMIT 1')->fetchColumn();
-        if ($current === false) {
-            return 'v1.0.0';
-        }
-        $exists = function (string $label): bool {
-            $stmt = $this->pdo->prepare('SELECT 1 FROM versions WHERE label = :label');
-            $stmt->execute(['label' => $label]);
-            return (bool) $stmt->fetchColumn();
-        };
-        if (!preg_match('/^([vV]?)(\d+)\.(\d+)\.(\d+)$/', (string) $current, $m)) {
-            $candidate = "{$current}-next";
-            for ($suffix = 2; $exists($candidate); $suffix++) $candidate = "{$current}-next-{$suffix}";
-            return $candidate;
-        }
-        $patch = (int) $m[4];
-        do {
-            $candidate = $m[1] . $m[2] . '.' . $m[3] . '.' . ++$patch;
-        } while ($exists($candidate));
-        return $candidate;
+        $labels = $this->pdo->query('SELECT label FROM versions ORDER BY id ASC')->fetchAll(PDO::FETCH_COLUMN);
+        return VersionNumber::suggestNext(array_map('strval', $labels)) ?? 'v1.0.0';
     }
 
     /**

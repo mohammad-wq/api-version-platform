@@ -57,10 +57,13 @@ final class LocalApi
         }
         try {
             $data = $handler();
-            $created = $route === '/versions/modify/insertUpdateVersion.php' && empty($this->input()['id']);
+            // A new version answers 201 whether it came from an import or from the README banner (as in npm).
+            $created = ($route === '/versions/modify/insertUpdateVersion.php' && empty($this->input()['id'])) || $route === '/local/readme/save';
             self::send($created ? 201 : 200, 'Success', $data);
         } catch (\OutOfBoundsException $e) {
             self::send(404, $e->getMessage());
+        } catch (\OverflowException $e) {
+            self::send(409, $e->getMessage());
         } catch (\InvalidArgumentException $e) {
             self::send(400, $e->getMessage());
         } catch (\PDOException $e) {
@@ -262,16 +265,29 @@ final class LocalApi
         if ($openapi !== null && (!is_array($openapi) || !isset($openapi['openapi']) || !is_array($openapi['paths'] ?? null))) {
             throw new \InvalidArgumentException('openapi must be an OpenAPI document with "openapi" and "paths"');
         }
+        $openapiJson = $openapi === null ? null : $this->openapiJsonKeepingObjects();
         $note = trim(self::text($data, 'note'));
         $id = is_scalar($data['id'] ?? null) ? (int) $data['id'] : 0;
         if ($id > 0) {
-            $this->versions->update($id, isset($data['version']) ? self::text($data, 'version') : null, $note, $openapi);
+            $this->versions->update($id, isset($data['version']) ? self::text($data, 'version') : null, $note, $openapi, $openapiJson);
             $version = $this->versions->byId($id) ?? [];
         } else {
             if ($openapi === null) throw new \InvalidArgumentException('openapi specification is required');
-            $version = $this->versions->createFromOpenApi(self::text($data, 'version'), $note, $openapi);
+            $version = $this->versions->createFromOpenApi(self::text($data, 'version'), $note, $openapi, $openapiJson);
         }
         return $this->versionRow($version, (int) $version['id'] === $this->versions->newestId());
+    }
+
+    /**
+     * The request's OpenAPI document re-encoded with its JSON objects kept as objects. input() decodes to
+     * PHP arrays, which would store every empty object `{}` (e.g. "properties": {}) as `[]`.
+     */
+    private function openapiJsonKeepingObjects(): ?string
+    {
+        $body = json_decode((string) file_get_contents('php://input'));
+        $openapi = is_object($body) ? ($body->openapi ?? null) : null;
+        if (is_string($openapi)) $openapi = json_decode($openapi);
+        return is_object($openapi) ? json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) : null;
     }
 
     /** @return array{id: int} */
@@ -351,7 +367,9 @@ final class LocalApi
         $rawHeaders = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : $http_response_header;
         if ($responseBody === false && !$rawHeaders) {
             $reason = error_get_last()['message'] ?? 'no response';
-            throw new \RuntimeException('Request execution failed: ' . preg_replace('/^file_get_contents\([^)]*\):\s*/', '', $reason));
+            $message = 'Request execution failed: ' . preg_replace('/^file_get_contents\([^)]*\):\s*/', '', $reason);
+            $this->recordHistory($data, $method, $url, $headers, $payload, null, [], $message, $durationMs);
+            throw new \RuntimeException($message);
         }
 
         // After redirects the headers hold every hop; keep the final response's.
@@ -370,20 +388,99 @@ final class LocalApi
         $parsed = json_decode($responseBody, true);
         $parsedBody = json_last_error() === JSON_ERROR_NONE ? $parsed : $responseBody;
 
-        if (!empty($data['save_history'])) {
+        $this->recordHistory($data, $method, $url, $headers, $payload, $status, $responseHeaders, $responseBody, $durationMs);
+
+        return ['status' => $status, 'headers' => $responseHeaders, 'body' => $parsedBody, 'duration_ms' => $durationMs];
+    }
+
+    private const HISTORY_REDACTED = '[REDACTED]';
+    /** Names whose values never reach the history table; same rule as the hosted backend and the npm package. */
+    private const HISTORY_SECRET_NAME = '/(authorization|cookie|session|token|secret|passw(or)?d|credential|api[-_]?key|private[-_]?key)/i';
+
+    /**
+     * Records a Test APIs call (also one that got no response: status NULL) with secrets redacted from the
+     * headers, the URL and JSON/form bodies. A history problem never turns the request into an error.
+     *
+     * @param array<string, mixed> $data
+     * @param array<string, mixed> $headers
+     * @param array<string, string> $responseHeaders
+     */
+    private function recordHistory(array $data, string $method, string $url, array $headers, ?string $payload, ?int $status, array $responseHeaders, string $responseBody, int $durationMs): void
+    {
+        if (empty($data['save_history'])) return;
+        try {
             $this->pdo->prepare('INSERT INTO request_history (environment, method, url, request_headers, request_body, response_status, response_headers, response_body, duration_ms, created_at)
                 VALUES (:environment, :method, :url, :request_headers, :request_body, :response_status, :response_headers, :response_body, :duration_ms, :created_at)')
                 ->execute([
                     'environment' => trim(is_scalar($data['environment'] ?? null) ? (string) $data['environment'] : '') ?: null,
-                    'method' => $method, 'url' => $url,
-                    'request_headers' => json_encode($headers), 'request_body' => $payload,
-                    'response_status' => $status, 'response_headers' => json_encode($responseHeaders),
-                    'response_body' => substr($responseBody, 0, 100000), 'duration_ms' => $durationMs,
+                    'method' => $method, 'url' => self::redactUrl($url),
+                    'request_headers' => json_encode(self::redactHeaders($headers)), 'request_body' => self::redactBody($payload),
+                    'response_status' => $status, 'response_headers' => json_encode(self::redactHeaders($responseHeaders)),
+                    'response_body' => self::redactBody($responseBody), 'duration_ms' => $durationMs,
                     'created_at' => gmdate('c'),
                 ]);
+        } catch (\Throwable $e) {
+            error_log('Could not save the request history: ' . $e->getMessage());
         }
+    }
 
-        return ['status' => $status, 'headers' => $responseHeaders, 'body' => $parsedBody, 'duration_ms' => $durationMs];
+    private static function isSecretName(string $name): bool
+    {
+        return preg_match(self::HISTORY_SECRET_NAME, $name) === 1;
+    }
+
+    /** @param array<string, mixed> $headers */
+    private static function redactHeaders(array $headers): array
+    {
+        $safe = [];
+        foreach ($headers as $name => $value) $safe[$name] = is_string($name) && self::isSecretName($name) ? self::HISTORY_REDACTED : $value;
+        return $safe;
+    }
+
+    private static function redactUrl(string $url): string
+    {
+        $query = parse_url($url, PHP_URL_QUERY);
+        if (!is_string($query) || $query === '') return $url;
+        $fragment = parse_url($url, PHP_URL_FRAGMENT);
+        return substr($url, 0, (int) strpos($url, '?')) . '?' . self::redactPairs($query) . (is_string($fragment) ? '#' . $fragment : '');
+    }
+
+    private static function redactPairs(string $pairs): string
+    {
+        return implode('&', array_map(function (string $pair): string {
+            [$name] = explode('=', $pair, 2);
+            return self::isSecretName(urldecode($name)) ? $name . '=' . self::HISTORY_REDACTED : $pair;
+        }, explode('&', $pairs)));
+    }
+
+    /** Objects stay objects (`{}` is not stored as `[]`); a secret-looking field is replaced whole. */
+    private static function redactJson(mixed $value, int $depth = 0): mixed
+    {
+        if ($depth > 32) return $value;
+        if ($value instanceof \stdClass) {
+            foreach (get_object_vars($value) as $key => $item) {
+                $value->{$key} = self::isSecretName((string) $key) ? self::HISTORY_REDACTED : self::redactJson($item, $depth + 1);
+            }
+        } elseif (is_array($value)) {
+            foreach ($value as $key => $item) {
+                $value[$key] = is_string($key) && self::isSecretName($key) ? self::HISTORY_REDACTED : self::redactJson($item, $depth + 1);
+            }
+        }
+        return $value;
+    }
+
+    private static function redactBody(?string $body, int $limit = 100000): ?string
+    {
+        if ($body === null || $body === '') return null;
+        $decoded = json_decode($body);
+        if (json_last_error() === JSON_ERROR_NONE && (is_object($decoded) || is_array($decoded))) {
+            $text = (string) json_encode(self::redactJson($decoded), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        } elseif (preg_match('/^[^=&\s]+=[^&]*(&[^=&\s]+=[^&]*)*$/', $body)) {
+            $text = self::redactPairs($body);
+        } else {
+            $text = $body;
+        }
+        return substr($text, 0, $limit);
     }
 
     /** @return list<array<string, mixed>> */

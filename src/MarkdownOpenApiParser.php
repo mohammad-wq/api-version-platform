@@ -427,7 +427,8 @@ final class MarkdownOpenApiParser
                     $this->readEnvironmentLine($environmentLine[1], $block['lines']);
                 }
                 if (preg_match('/^Servers?:\s*(?:`([^`\s]+)`|(\S+))\s*$/im', $block['text'], $serverLine)) {
-                    $url = trim($serverLine[1] ?? $serverLine[2], '`');
+                    // preg_match() sets an unmatched group to '' (not null), so `??` cannot pick the unquoted form.
+                    $url = trim(($serverLine[1] ?? '') !== '' ? $serverLine[1] : ($serverLine[2] ?? ''), '`');
                     $canonical = $this->normalizeServerUrl($url);
                     if ($canonical === null) {
                         $this->warn('INVALID_SERVER', "Invalid server URL \"{$url}\"; use an HTTP(S) URL without credentials, query, or fragment.", $block['lines']);
@@ -626,6 +627,13 @@ final class MarkdownOpenApiParser
                     $endpoint['detailSectionIds'][] = $section['id'];
                     $endpoint['query'] = $query;
                     $endpoint['permission'] = $this->parsePermissions($permissionText);
+                    // "`customers:view` or `customers:view_all`": either permission is enough. Kept as
+                    // written in x-permissions-any-of instead of an (all-of) x-permissions list.
+                    $anyOf = $this->parseAnyOfPermissions($permissionText);
+                    if ($anyOf) {
+                        $endpoint['permission'] = [];
+                        $endpoint['permissionAnyOf'] = $anyOf;
+                    }
                     if ($auth !== null) {
                         $endpoint['public'] = !$auth;
                     }
@@ -649,6 +657,11 @@ final class MarkdownOpenApiParser
                         $this->addParameter($endpoint, $parameter);
                     }
                 $this->applyShorthand($endpoint, $targetCell);
+                // A `{name, email, phone?}` span in the description is the JSON body of a write
+                // endpoint whose Endpoint cell has none.
+                if (!isset($endpoint['request']['body']) && in_array($method, self::WRITE_METHODS, true)) {
+                    $this->applyShorthand($endpoint, '`-` ' . $description);
+                }
                 $this->applyDescriptionFacts($endpoint, $description);
                 if ($unresolved) {
                     $this->warn('UNRESOLVED_PREFIX', "No path prefix found for \"{$target}\"", [$row['line'], $row['line']], $endpoint);
@@ -911,7 +924,9 @@ final class MarkdownOpenApiParser
                         preg_match('/^No token (?:is )?required\.?$/i', trim($text))) {
                         continue;
                     }
-                    foreach ($endpointIndexes as $index) {
+                    // A note that names an endpoint file in backticks goes to that endpoint only.
+                    $named = $this->targetsNamedInLabel($section['blocks'][$next]['text'], $endpointIndexes);
+                    foreach ($named ?: $endpointIndexes as $index) {
                         $description = trim($this->endpoints[$index]['description']);
                         if (!str_contains($description, $text)) {
                             $this->endpoints[$index]['description'] = trim($description . "\n\n" . $text);
@@ -983,9 +998,9 @@ final class MarkdownOpenApiParser
         } elseif (preg_match('/\bAuth\s*:\s*true\b/i', $text)) {
             $endpoint['public'] = false;
         }
+        $endpointIsRemove = preg_match('/remove/i', basename(parse_url($endpoint['path'], PHP_URL_PATH) ?: '')) === 1;
         if (preg_match('/^(Remove )?Errors?\s*:\s*(.+)$/im', $text, $errors)) {
             $removeOnly = !empty($errors[1]);
-            $endpointIsRemove = preg_match('/remove/i', basename(parse_url($endpoint['path'], PHP_URL_PATH) ?: '')) === 1;
             if (!$removeOnly || $endpointIsRemove) {
                 preg_match_all('/`(\d{3})`\s*([^,;\n.]*)/u', $errors[2], $matches, PREG_SET_ORDER);
                 foreach ($matches as $match) {
@@ -997,7 +1012,9 @@ final class MarkdownOpenApiParser
                 }
             }
         }
-        if (preg_match_all('/`(\d{3})`\s*([^,;\n.]*)/u', $text, $mentions, PREG_SET_ORDER)) {
+        // A "Remove errors:" line only documents remove endpoints, so its codes are not mentions for the others.
+        $mentionText = $endpointIsRemove ? $text : (string) preg_replace('/^Remove Errors?\s*:.*$/im', '', $text);
+        if (preg_match_all('/`(\d{3})`\s*([^,;\n.]*)/u', $mentionText, $mentions, PREG_SET_ORDER)) {
             foreach ($mentions as $mention) {
                 $status = (int)$mention[1];
                 if ($status < 400) {
@@ -1032,7 +1049,7 @@ final class MarkdownOpenApiParser
                     ? ['type' => 'string', 'format' => 'binary']
                     : ['type' => 'string'];
                 if (($field[2] ?? '') !== '?') {
-                    $required[] = $name;
+                    if (!in_array($name, $required, true)) $required[] = $name; // listed once even if named twice
                 }
             }
             if ($properties) {
@@ -1046,6 +1063,44 @@ final class MarkdownOpenApiParser
                 ];
             }
         }
+        foreach ($this->parseProseHeaderParameters($text) as $parameter) {
+            $documented = false;
+            foreach ($endpoint['request']['parameters'] as $existing) {
+                $documented = $documented || ($existing['in'] === 'header' && strtolower($existing['name']) === strtolower($parameter['name']));
+            }
+            if (!$documented) {
+                $this->addParameter($endpoint, $parameter);
+            }
+        }
+    }
+
+    /** "Requests must include the `Idempotency-Key` header" -> a header parameter (required when the sentence says so). */
+    private function parseProseHeaderParameters(string $text): array
+    {
+        $parameters = [];
+        preg_match_all('/`([A-Za-z0-9-]+)`\s+header\b/i', $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
+        foreach ($matches as $match) {
+            [$whole, $offset] = $match[0];
+            $before = substr($text, 0, $offset);
+            $lineStart = ($newline = strrpos($before, "\n")) === false ? 0 : $newline + 1;
+            // "Headers: `X-Trace` header ..." lines are declarations, read by parseHeaderParameters().
+            if (preg_match('/^\s*(?:header(?:\s+params?)?|headers)\s*:/im', substr($text, $lineStart, $offset + 1 - $lineStart))) {
+                continue;
+            }
+            $start = max(
+                ($dot = strrpos($before, '.')) === false ? -1 : $dot,
+                ($newline = strrpos($before, "\n")) === false ? -1 : $newline,
+                ($semicolon = strrpos($before, ';')) === false ? -1 : $semicolon,
+            ) + 1;
+            $sentence = substr($text, $start, $offset + strlen($whole) - $start);
+            $parameters[] = [
+                'name' => $match[1][0],
+                'in' => 'header',
+                'required' => !preg_match('/\b(?:optional|not required)\b/i', $sentence) && preg_match('/\b(?:must|required|requires?|include)\b/i', $sentence) === 1,
+                'schema' => ['type' => 'string'],
+            ];
+        }
+        return $parameters;
     }
 
     /** Every operation gets a unique operationId derived from its method and path (`get_widgets_list_php`, `_2` on collisions). */
@@ -1236,12 +1291,30 @@ final class MarkdownOpenApiParser
 
     private function parsePermissions(string $text): array
     {
-        preg_match_all('/`([^`]+)`(?:\/([a-z]+))?/i', $text, $matches, PREG_SET_ORDER);
+        preg_match_all('/`([^`]+)`(?:\/([a-z]+))?/i', $text, $matches, PREG_SET_ORDER | PREG_OFFSET_CAPTURE);
         $permissions = [];
+        $resource = null;
+        $previousEnd = -1;
         foreach ($matches as $match) {
-            if (!preg_match('/^([a-z0-9_*.-]+):([a-z0-9_*.-]+(?:\/[a-z0-9_*.-]+)*)$/i', trim($match[1]), $parts)) {
+            $code = trim($match[1][0]);
+            $gap = $previousEnd === -1 ? '' : substr($text, $previousEnd, $match[0][1] - $previousEnd);
+            $previousEnd = $match[0][1] + strlen($match[0][0]);
+            $extra = isset($match[2]) && $match[2][1] !== -1 ? $match[2][0] : '';
+            if (!preg_match('/^([a-z0-9_*.-]+):([a-z0-9_*.-]+(?:\/[a-z0-9_*.-]+)*)$/i', $code, $parts)) {
+                // "`customers:add`/`edit`": a bare action after "/" continues the previous resource.
+                if ($resource !== null && preg_match('/^\s*\/\s*$/', $gap) && preg_match('/^[a-z0-9_*.-]+$/i', $code)) {
+                    foreach (array_filter([strtolower($code), strtolower($extra)]) as $action) {
+                        if (in_array($action, ['view', 'add', 'edit', 'delete'], true)) {
+                            $permissions[] = strtolower($resource . ':' . $action);
+                        }
+                    }
+                } else {
+                    $resource = null;
+                }
                 continue;
             }
+            $resource = $parts[1];
+            $match = [$match[0][0], $match[1][0], $extra];
             $actions = explode('/', strtolower($parts[2]));
             if (!empty($match[2])) {
                 $actions[] = strtolower($match[2]);
@@ -1253,6 +1326,20 @@ final class MarkdownOpenApiParser
             }
         }
         return array_values(array_unique($permissions));
+    }
+
+    /** "`tickets:view` or `tickets:view_all`" -> both codes (empty unless the cell says "or" between two or more codes). */
+    private function parseAnyOfPermissions(string $text): array
+    {
+        if (!preg_match('/\bor\b/i', (string) preg_replace('/`[^`]*`/', ' ', $text))) {
+            return [];
+        }
+        $codes = array_values(array_filter(
+            array_map('trim', $this->codeSpans($text)),
+            static fn(string $code): bool => preg_match('/^[A-Za-z0-9_*.-]+:[A-Za-z0-9_*.-]+$/', $code) === 1,
+        ));
+        $codes = array_values(array_unique($codes));
+        return count($codes) > 1 ? $codes : [];
     }
 
     private function applyShorthand(array &$endpoint, string $cell): void
@@ -1273,11 +1360,25 @@ final class MarkdownOpenApiParser
     {
         $properties = [];
         $required = [];
-        preg_match_all('/([A-Za-z_][A-Za-z0-9_]*)(\?)?/', trim($text, '{} '), $fields, PREG_SET_ORDER);
-        foreach ($fields as $field) {
-            $properties[$field[1]] = ['type' => 'string'];
-            if (($field[2] ?? '') !== '?') {
-                $required[] = $field[1];
+        $inner = trim($text, '{} ');
+        if (str_contains($inner, ':')) {
+            // Typed shorthand: `{id: integer, tags: string[], note?}`.
+            foreach (explode(',', $inner) as $entry) {
+                if (!preg_match('/^([A-Za-z_][A-Za-z0-9_]*)(\?)?\s*(?::\s*(.*))?$/s', trim($entry), $field)) {
+                    continue;
+                }
+                $properties[$field[1]] = $this->shorthandValueSchema(trim($field[3] ?? ''));
+                if (($field[2] ?? '') !== '?') {
+                    if (!in_array($field[1], $required, true)) $required[] = $field[1];
+                }
+            }
+        } else {
+            preg_match_all('/([A-Za-z_][A-Za-z0-9_]*)(\?)?/', $inner, $fields, PREG_SET_ORDER);
+            foreach ($fields as $field) {
+                $properties[$field[1]] = ['type' => 'string'];
+                if (($field[2] ?? '') !== '?') {
+                    if (!in_array($field[1], $required, true)) $required[] = $field[1];
+                }
             }
         }
         $schema = ['type' => 'object', 'properties' => (object)$properties];
@@ -1285,6 +1386,23 @@ final class MarkdownOpenApiParser
             $schema['required'] = $required;
         }
         return $schema;
+    }
+
+    /** The type in typed shorthand: string, integer, number, boolean, object, `T[]` or `array<T>`; anything else is a string. */
+    private function shorthandValueSchema(string $value): array
+    {
+        $types = ['string', 'integer', 'number', 'boolean', 'object'];
+        $primitive = strtolower($value);
+        if (in_array($primitive, $types, true)) {
+            return ['type' => $primitive];
+        }
+        if (preg_match('/^(?:array\s*<\s*([A-Za-z]+)\s*>|([A-Za-z]+)\[\])$/i', $value, $array)) {
+            $itemType = strtolower(($array[1] ?? '') !== '' ? $array[1] : ($array[2] ?? ''));
+            if (in_array($itemType, $types, true)) {
+                return ['type' => 'array', 'items' => ['type' => $itemType]];
+            }
+        }
+        return ['type' => 'string'];
     }
 
     private function decodeJsonExample(string $text): mixed
@@ -1319,12 +1437,34 @@ final class MarkdownOpenApiParser
             $clean .= $out . "\n";
         }
         $clean = preg_replace('/,\s*([}\]])/', '$1', $clean);
-        $decoded = json_decode($clean, true);
-        return json_last_error() === JSON_ERROR_NONE ? $decoded : null;
+        $decoded = json_decode($clean);
+        return json_last_error() === JSON_ERROR_NONE ? self::arraysKeepingEmptyObjects($decoded) : null;
+    }
+
+    /**
+     * Converts decoded JSON objects to PHP arrays, except empty objects: they stay `stdClass`, because an
+     * empty PHP array would be written back as `[]` and turn every `{}` in an example into a list.
+     */
+    private static function arraysKeepingEmptyObjects(mixed $value): mixed
+    {
+        if ($value instanceof \stdClass) {
+            $fields = get_object_vars($value);
+            if ($fields === []) {
+                return new \stdClass();
+            }
+            return array_map([self::class, 'arraysKeepingEmptyObjects'], $fields);
+        }
+        if (is_array($value)) {
+            return array_map([self::class, 'arraysKeepingEmptyObjects'], $value);
+        }
+        return $value;
     }
 
     private function inferSchema(mixed $value, array $comments = []): array
     {
+        if ($value instanceof \stdClass) {
+            return ['type' => 'object', 'properties' => new \stdClass()];
+        }
         if (is_array($value)) {
             if (array_is_list($value)) {
                 $items = $value ? $this->inferSchema($value[0], $comments) : ['type' => 'string'];
@@ -1399,6 +1539,7 @@ final class MarkdownOpenApiParser
         if ($endpoint['description'] !== '') $operation['description'] = $endpoint['description'];
         if ($endpoint['tag'] !== '') $operation['tags'] = [$endpoint['tag']];
         if ($endpoint['permission']) $operation['x-permissions'] = $endpoint['permission'];
+        if (!empty($endpoint['permissionAnyOf'])) $operation['x-permissions-any-of'] = $endpoint['permissionAnyOf'];
         $operation['security'] = !empty($endpoint['public']) ? [] : [['BearerAuth' => []]];
 
         $parameters = $endpoint['request']['parameters'];

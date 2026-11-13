@@ -17,6 +17,7 @@ if ($autoload !== null && is_file($autoload)) {
     require __DIR__ . '/../src/Server.php';
     require __DIR__ . '/../src/SourceHasher.php';
     require __DIR__ . '/../src/Storage.php';
+    require __DIR__ . '/../src/VersionNumber.php';
     require __DIR__ . '/../src/VersionService.php';
     $projectRoot = getcwd();
 }

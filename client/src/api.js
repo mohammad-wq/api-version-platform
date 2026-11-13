@@ -7,6 +7,8 @@ import { baseUrlError } from "./lib/base-url.js";
 import { expiryFrom, jwtExpiry, normalizeHeaderFormat } from "./lib/auth-config.js";
 import { operationsForSpec } from "./lib/openapi-endpoints.js";
 import { normalizeAccountRole, normalizeAccountStatus, normalizeProjectRole } from "./lib/permissions.js";
+import { mode } from "./mode.js";
+import { suggestNextVersion } from "./lib/version-number.js";
 
 const TOKEN_KEY = "apvp.token";
 const PROJECT_SETTINGS_KEY = "apvp.project-settings.";
@@ -74,7 +76,8 @@ async function request(method, path, { query, json, form, authenticated = true }
 
   let response;
   try {
-    response = await fetch(`${API_BASE}${path}${toQueryString(query)}`, { method, headers, body });
+    // no-store: version data changes with every save, so a cached GET could show an old version list.
+    response = await fetch(`${API_BASE}${path}${toQueryString(query)}`, { method, headers, body, cache: "no-store" });
   } catch {
     throw new ApiError(0, "Cannot reach the API server. Check the API URL and network connection.", "NETWORK_ERROR");
   }
@@ -266,21 +269,15 @@ function versionSummary(version) {
   };
 }
 
+/** Same naming rule everywhere (form suggestion, CLIs, "Save as new version"): first version's format, latest's numbers + 1. */
 function nextVersionNumber(versions) {
-  const latest = versions.find((version) => version.isLatest) ?? versions[0];
-  if (!latest) return "v1.0.0";
-  const current = latest.versionNumber;
-  const match = current.match(/^([vV]?)(\d+)\.(\d+)\.(\d+)$/);
-  if (!match) {
-    let candidate = `${current}-next`;
-    let suffix = 2;
-    while (versions.some((version) => version.versionNumber === candidate)) candidate = `${current}-next-${suffix++}`;
-    return candidate;
-  }
-  const prefix = match[1];
-  let patch = Number(match[4]) + 1;
-  let candidate = `${prefix}${match[2]}.${match[3]}.${patch}`;
-  while (versions.some((version) => version.versionNumber === candidate)) candidate = `${prefix}${match[2]}.${match[3]}.${++patch}`;
+  const oldestFirst = [...versions]
+    .sort((a, b) => (a.id ?? 0) - (b.id ?? 0))
+    .map((version) => version.versionNumber);
+  const taken = (name) => versions.some((version) => version.versionNumber === name);
+  let candidate = suggestNextVersion(oldestFirst) ?? "v1.0.0";
+  // The suggestion bumps the latest numbers; step on if that name is already used by an older version.
+  for (let guard = 0; taken(candidate) && guard < 1000; guard++) candidate = suggestNextVersion([...oldestFirst, candidate]);
   return candidate;
 }
 
@@ -299,17 +296,6 @@ function authHeader(project, token) {
   return format.includes("{token}") ? format.replaceAll("{token}", token) : `${format} ${token}`.trim();
 }
 
-const SENSITIVE_KEY = /(authorization|cookie|session|token|secret|password|credential|api[-_]?key)/i;
-
-function containsSensitiveValue(value, depth = 0) {
-  if (depth > 8 || value == null) return false;
-  if (Array.isArray(value)) return value.some((item) => containsSensitiveValue(item, depth + 1));
-  if (typeof value === "object") {
-    return Object.entries(value).some(([key, item]) => SENSITIVE_KEY.test(key) || containsSensitiveValue(item, depth + 1));
-  }
-  return typeof value === "string" && SENSITIVE_KEY.test(value);
-}
-
 async function runRequest(project, method, path, query, headers, body, token, saveHistory) {
   const requestHeaders = {};
   for (const [key, value] of Object.entries(headers ?? {})) {
@@ -321,7 +307,9 @@ async function runRequest(project, method, path, query, headers, body, token, sa
     requestHeaders[project.headerName] = authHeader(project, token);
   }
   const url = projectUrl(project, path, query);
-  const historySaved = saveHistory && !token && !containsSensitiveValue({ headers: requestHeaders, url, body });
+  // Every API call is recorded (signed-in ones too); the server redacts secrets before storing it.
+  // Only the sign-in request itself (saveHistory false) is left out.
+  const historySaved = Boolean(saveHistory);
   const result = await post("/runner/execute.php", {
     project_id: project.id,
     environment: project.environmentName ?? "Default",
@@ -359,7 +347,9 @@ const postVersion = (payload) => post("/versions/modify/insertUpdateVersion.php"
 export const api = {
   // local mode: retained for the standalone npm client; this web API does not expose these routes.
   readmeStatus: () => get("/local/readme"),
-  parseReadme: (markdown) => post("/local/readme/parse", { markdown }),
+  // README Markdown is always parsed by the server, so the UI and the CLI turn a README into the same OpenAPI.
+  // Local apps (npm, Composer) parse at /local/readme/parse; the hosted PHP backend has its own route.
+  parseReadme: (markdown) => post(mode.local ? "/local/readme/parse" : "/versions/fetch/parseReadme.php", { markdown }),
   saveReadme: ({ label, note } = {}) => post("/local/readme/save", { label, note }),
 
   // auth

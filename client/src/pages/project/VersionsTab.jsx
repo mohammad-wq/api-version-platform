@@ -8,6 +8,9 @@ import DiffView from "../../components/DiffView.jsx";
 import { MAX_OPENAPI_IMPORT_BYTES, prepareOpenApiImport, validateOpenApiDocument } from "../../lib/openapi_import.js";
 import { isVersionTaken, matchesVersionTemplate, suggestNextVersion } from "../../lib/version-number.js";
 
+/** Suggested name for a project's first version (the CLIs use the same). */
+const FIRST_VERSION = "v1.0.0";
+
 /** One "jump to" entry per path of an OpenAPI document, landing on its `"/path": {` key. */
 function jumpOptionsOf(spec) {
   return Object.entries(spec?.paths ?? {}).map(([path, item]) => {
@@ -91,7 +94,7 @@ function Dropzone({ file, onFile, inputRef }) {
   );
 }
 
-function ImportPanel({ projectId, versions = [], onImported }) {
+function ImportPanel({ projectId, versions = [], versionsLoaded = true, onImported }) {
   // Drafts survive tab switches and reloads. The chosen File can only be kept in memory.
   const [mode, setMode] = usePersistentState(`ver.${projectId}.mode`, "file");
   const [file, setFile] = usePersistentState(`ver.${projectId}.file`, null, { memoryOnly: true });
@@ -110,9 +113,12 @@ function ImportPanel({ projectId, versions = [], onImported }) {
   const existingNames = useMemo(() => versions.map((version) => version.versionNumber), [versions]);
   // The first version may be named freely; every later one is suggested in that initial version's
   // format with a numeric increment, so names stay consistent across the project.
+  // A project with no versions starts at v1.0.0 (as both CLIs do), so the required field is never
+  // left empty — an empty required field silently blocks "Parse and review".
+  // Nothing is suggested until the list has loaded, so the field never flashes a number that is already taken.
   const suggestion = useMemo(
-    () => suggestNextVersion([...versions].reverse().map((version) => version.versionNumber)),
-    [versions],
+    () => (versionsLoaded ? (suggestNextVersion([...versions].reverse().map((version) => version.versionNumber)) ?? FIRST_VERSION) : null),
+    [versions, versionsLoaded],
   );
   const lastSuggestedNumber = useRef();
   // Put a newly calculated suggestion into the field once, but never put it back after the
@@ -252,6 +258,8 @@ function ImportPanel({ projectId, versions = [], onImported }) {
             <small className="muted">Keeps the format of your first version — edit it if you need a different name.</small>
           ) : namingMismatch ? (
             <small className="field-error">This project uses the version pattern “{versionTemplate}”.</small>
+          ) : versions.length === 0 ? (
+            <small className="muted">The first version’s name sets the pattern later versions follow.</small>
           ) : null}
         </label>
         <label>
@@ -618,7 +626,7 @@ export default function VersionsTab({ project, can, reloadProject, revision }) {
   return (
     <div className="stack">
       {can("EDITOR") ? (
-        <ImportPanel projectId={project.id} versions={list} onImported={onImported} />
+        <ImportPanel projectId={project.id} versions={list} versionsLoaded={Boolean(versions.data)} onImported={onImported} />
       ) : (
         <Notice kind="info">You have read-only access, so you cannot add versions.</Notice>
       )}

@@ -35,7 +35,7 @@ function Highlight({ text, needle }) {
   );
 }
 
-/** The path with its {placeholders} highlighted. */
+/** The path with its {placeholders} highlighted. Long paths may wrap after a "/" but never inside a segment. */
 function PathText({ path }) {
   return (
     <code className="op-path">
@@ -45,7 +45,12 @@ function PathText({ path }) {
             {part}
           </span>
         ) : (
-          part
+          part.split(/(?<=\/)/).map((segment, i) => (
+            <span key={`${index}-${i}`}>
+              {segment}
+              {segment.endsWith("/") && <wbr />}
+            </span>
+          ))
         ),
       )}
     </code>

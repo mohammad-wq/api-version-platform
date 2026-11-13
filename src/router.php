@@ -10,6 +10,7 @@ use Mohammad\ApiVersionPlatform\VersionService;
 require_once __DIR__ . '/Config.php';
 require_once __DIR__ . '/SourceHasher.php';
 require_once __DIR__ . '/Storage.php';
+require_once __DIR__ . '/VersionNumber.php';
 require_once __DIR__ . '/VersionService.php';
 require_once __DIR__ . '/LocalApi.php';
 

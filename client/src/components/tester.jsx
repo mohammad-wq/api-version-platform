@@ -124,11 +124,6 @@ export function ResponseView({ result }) {
         <code className="break">{request.url}</code>
       </div>
       <div className="response-body">
-        {!result.historySaved && (
-          <Notice kind="info">
-            This request was not saved to history because it contains credentials or sensitive data.
-          </Notice>
-        )}
         {response.truncated && <Notice kind="warn">The response was larger than 5 MB and has been cut off.</Notice>}
         <div className="row space wrap">
           <div className="seg-tabs" role="group" aria-label="Response view">

@@ -145,9 +145,6 @@
                                 }
                             }
                         }
-                    },
-                    "409": {
-                        "description": "customer still has open orders"
                     }
                 },
                 "operationId": "get_customers_fetch_getCustomers_php"
@@ -185,9 +182,6 @@
                     },
                     "404": {
                         "description": "customer not found"
-                    },
-                    "409": {
-                        "description": "customer still has open orders"
                     }
                 },
                 "operationId": "get_customers_fetch_getCustomer_php"
@@ -226,9 +220,6 @@
                     },
                     "404": {
                         "description": "customer not found"
-                    },
-                    "409": {
-                        "description": "customer still has open orders"
                     }
                 },
                 "operationId": "get_customers_fetch_getCustomerById_php"
@@ -242,13 +233,42 @@
                     "Customers"
                 ],
                 "x-permissions": [
-                    "customers:add"
+                    "customers:add",
+                    "customers:edit"
                 ],
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "customer_name": {
+                                        "type": "string"
+                                    },
+                                    "email": {
+                                        "type": "string"
+                                    },
+                                    "phone": {
+                                        "type": "string"
+                                    },
+                                    "status": {
+                                        "type": "string"
+                                    }
+                                },
+                                "required": [
+                                    "customer_name",
+                                    "email"
+                                ]
+                            }
+                        }
+                    }
+                },
                 "responses": {
                     "200": {
                         "description": "Success"
@@ -374,9 +394,6 @@
                 "responses": {
                     "200": {
                         "description": "Success"
-                    },
-                    "409": {
-                        "description": "customer still has open orders"
                     }
                 },
                 "operationId": "get_customers_fetch_getCustomerOrders_php"
@@ -422,9 +439,6 @@
                 "responses": {
                     "200": {
                         "description": "Success"
-                    },
-                    "409": {
-                        "description": "customer still has open orders"
                     }
                 },
                 "operationId": "post_customers_modify_changeCustomerStatus_php"
@@ -920,6 +934,10 @@
                 "tags": [
                     "Reference data"
                 ],
+                "x-permissions": [
+                    "countries:add",
+                    "countries:edit"
+                ],
                 "security": [
                     {
                         "BearerAuth": []
@@ -940,6 +958,9 @@
                 "tags": [
                     "Reference data"
                 ],
+                "x-permissions": [
+                    "countries:delete"
+                ],
                 "security": [
                     {
                         "BearerAuth": []
@@ -957,6 +978,9 @@
                 "description": "Countries: Remove",
                 "tags": [
                     "Reference data"
+                ],
+                "x-permissions": [
+                    "countries:delete"
                 ],
                 "security": [
                     {
@@ -1035,6 +1059,10 @@
                 "tags": [
                     "Reference data"
                 ],
+                "x-permissions": [
+                    "currencies:add",
+                    "currencies:edit"
+                ],
                 "security": [
                     {
                         "BearerAuth": []
@@ -1055,6 +1083,9 @@
                 "tags": [
                     "Reference data"
                 ],
+                "x-permissions": [
+                    "currencies:delete"
+                ],
                 "security": [
                     {
                         "BearerAuth": []
@@ -1072,6 +1103,9 @@
                 "description": "Currencies: Remove",
                 "tags": [
                     "Reference data"
+                ],
+                "x-permissions": [
+                    "currencies:delete"
                 ],
                 "security": [
                     {

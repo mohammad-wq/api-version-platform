@@ -116,7 +116,8 @@ if (in_array('--refresh', $argv, true)) {
 }
 
 check(
-    $templateJson === (string) file_get_contents($templateFixturePath),
+    // Line endings are ignored: a Windows checkout (core.autocrlf) stores the fixture with CRLF.
+    $templateJson === str_replace("\r\n", "\n", (string) file_get_contents($templateFixturePath)),
     "client/test-fixtures/API_README_TEMPLATE.openapi.json matches the PHP parser output (edit the template, then run `php tests/parser_test.php --refresh`).",
 );
 
@@ -262,6 +263,52 @@ $synonymDoc = parse("# API\n\n## Users\n\n| HTTP Verb | API Route | Permissions 
 check(count($synonymDoc['warnings']) === 0, 'Header synonyms (HTTP Verb, API Route, Permissions, Authentication) parse without warnings.');
 $synonymOp = operationsOfDoc($synonymDoc['openapi'])[0][2] ?? null;
 check($synonymOp !== null && in_array('users:view', $synonymOp['x-permissions'] ?? [], true), 'Permissions from a synonym-named column land in x-permissions.');
+
+// ---------------------------------------------------------------- documented README features (JS parity)
+
+/** One table row in a `customers/` section; returns the decoded operation for $path/$method. */
+function customersTable(string $permission, string $description, string $endpoint = '`modify/save.php`', string $method = 'POST', string $after = ''): string
+{
+    return "# API\n\n## Customers — `customers/`\n\n| Method | Endpoint | Permission | Auth | Description |\n|---|---|---|---|---|\n| {$method} | {$endpoint} | {$permission} | true | {$description} |\n{$after}";
+}
+
+function documentedOperation(string $markdown, string $path, string $method = 'post'): array
+{
+    $document = json_decode(json_encode(parse($markdown)['openapi']), true);
+    return $document['paths'][$path][$method] ?? [];
+}
+
+$chained = documentedOperation(customersTable('`customers:add`/`edit`', 'Save'), '/customers/modify/save.php');
+check(($chained['x-permissions'] ?? null) === ['customers:add', 'customers:edit'], '`customers:add`/`edit` expands to customers:add and customers:edit.');
+$referenceDoc = json_decode(json_encode(parse("# API\n\n## Lookup — `masters/`\n\n| Entity | List (GET) | Remove (POST) | Permission |\n|---|---|---|---|\n| Colors | `fetch/colors.php` | `remove/removeColor.php` | `colors:view`/`delete` |\n")['openapi']), true);
+check(($referenceDoc['paths']['/masters/remove/removeColor.php']['post']['x-permissions'] ?? null) === ['colors:delete'], 'Reference tables keep chained `resource:view`/`delete` permissions for their Remove column.');
+
+$descriptionBody = documentedOperation(customersTable('`customers:add`', 'Save: `{customer_name, phone?}`'), '/customers/modify/save.php');
+check(($descriptionBody['requestBody']['content']['application/json']['schema'] ?? null) === ['type' => 'object', 'properties' => ['customer_name' => ['type' => 'string'], 'phone' => ['type' => 'string']], 'required' => ['customer_name']], 'A `{...}` span in the Description column is the JSON body of a write endpoint.');
+check(!isset(documentedOperation(customersTable('`customers:view`', 'Returns `{id, name}`', '`fetch/one.php`', 'GET'), '/customers/fetch/one.php', 'get')['requestBody']), 'A `{...}` span in a GET description is not a request body.');
+
+$removeOnly = customersTable('`customers:view`', 'List', '`fetch/list.php`', 'GET', "| POST | `remove/removeCustomer.php` | `customers:delete` | true | Remove |\n\nRemove errors: `409` still has orders.\n");
+check(array_keys(documentedOperation($removeOnly, '/customers/fetch/list.php', 'get')['responses'] ?? []) === [200], 'A "Remove errors:" line does not add its codes to non-remove endpoints.');
+check((documentedOperation($removeOnly, '/customers/remove/removeCustomer.php')['responses'][409] ?? null) === ['description' => 'still has orders'], 'A "Remove errors:" line documents remove endpoints.');
+
+$proseHeader = documentedOperation(customersTable('`customers:add`', 'Save. Requests must include the `Idempotency-Key` header'), '/customers/modify/save.php');
+check(($proseHeader['parameters'] ?? null) === [['name' => 'Idempotency-Key', 'in' => 'header', 'required' => true, 'schema' => ['type' => 'string']]], 'Prose such as "Requests must include the `Idempotency-Key` header" documents a required header parameter.');
+
+$anyOf = documentedOperation(customersTable('`tickets:view` or `tickets:view_all`', 'List', '`fetch/list.php`', 'GET'), '/customers/fetch/list.php', 'get');
+check(($anyOf['x-permissions-any-of'] ?? null) === ['tickets:view', 'tickets:view_all'] && !isset($anyOf['x-permissions']), '`a:view` or `a:view_all` becomes x-permissions-any-of (either permission is enough).');
+
+$typed = documentedOperation(customersTable('`customers:add`', 'Save', '`modify/save.php` — `{id: integer, tags: string[], note?}`'), '/customers/modify/save.php');
+check(($typed['requestBody']['content']['application/json']['schema'] ?? null) === ['type' => 'object', 'properties' => ['id' => ['type' => 'integer'], 'tags' => ['type' => 'array', 'items' => ['type' => 'string']], 'note' => ['type' => 'string']], 'required' => ['id', 'tags']], 'Typed shorthand `{id: integer, tags: string[], note?}` is typed, not split into words.');
+
+$unquotedServer = parse("# API\n\nServers: https://api.example.com/v1/\n\n## Users\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `/u/list.php` | List |\n");
+check(($unquotedServer['openapi']['servers'] ?? []) === [['url' => 'https://api.example.com/v1']] && $unquotedServer['warnings'] === [], 'A Servers: URL without backticks is accepted.');
+
+$namedNote = customersTable('`customers:view`', 'List', '`fetch/list.php`', 'GET', "| POST | `modify/save.php` | `customers:add` | true | Save |\n\nSaving through `save.php` is idempotent.\n");
+check((documentedOperation($namedNote, '/customers/fetch/list.php', 'get')['description'] ?? null) === 'List', 'A note under a table that names `save.php` is not added to other endpoints.');
+check((documentedOperation($namedNote, '/customers/modify/save.php')['description'] ?? null) === "Save\n\nSaving through save.php is idempotent.", 'A note under a table that names `save.php` is added to that endpoint.');
+
+$dupField = ("# API\n\n## Docs\n\n| Method | Endpoint | Description |\n|---|---|---|\n| POST | `/d/upload.php` | Upload with `multipart/form-data`: `a`, `b?`, file field `upload` and `a` |\n");
+check((documentedOperation($dupField, '/d/upload.php')['requestBody']['content']['multipart/form-data']['schema']['required'] ?? null) === ['a', 'upload'], 'A multipart field named twice is listed once in required (duplicates make the OpenAPI invalid).');
 
 // ---------------------------------------------------------------- done
 

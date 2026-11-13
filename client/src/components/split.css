@@ -23,10 +23,69 @@
   --c-del-edge: #d6382b;
   --c-mod: #fff6e0;
   --c-mod-edge: #e0a100;
+  --c-mod-border: #f0d68a;
+  --c-mark-del: #f2a79f;
+  --c-mark-add: #86d3a4;
+  --c-line-no: #8b96aa;
+  --c-stripe-a: #f6f7fa;
+  --c-stripe-b: #eff1f6;
+  --c-skel-a: var(--skeleton-a, #e9ecf1);
+  --c-skel-b: var(--skeleton-b, #f4f6f9);
+  --c-sticky: rgba(245, 246, 248, 0.94);
+  --c-badge-ink: #7a4b00;
+  --c-badge-bg: #fde7ad;
   --c-ren: #eef6ff;
   --c-ren-edge: #2e90fa;
   --c-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
   min-width: 0;
+}
+:root[data-theme="dark"] .cmp {
+  --c-add: rgba(74, 222, 128, 0.1);
+  --c-add-strong: rgba(74, 222, 128, 0.28);
+  --c-add-ink: #bbf7d0;
+  --c-add-edge: #4ade80;
+  --c-del: rgba(248, 113, 113, 0.1);
+  --c-del-strong: rgba(248, 113, 113, 0.3);
+  --c-del-ink: #fecaca;
+  --c-del-edge: #f87171;
+  --c-mod: rgba(251, 191, 36, 0.09);
+  --c-mod-edge: #fbbf24;
+  --c-mod-border: rgba(251, 191, 36, 0.35);
+  --c-mark-del: rgba(248, 113, 113, 0.45);
+  --c-mark-add: rgba(74, 222, 128, 0.4);
+  --c-line-no: #6b7791;
+  --c-stripe-a: #121826;
+  --c-stripe-b: #161d2c;
+  --c-sticky: rgba(11, 15, 23, 0.92);
+  --c-badge-ink: #fde68a;
+  --c-badge-bg: rgba(251, 191, 36, 0.2);
+  --c-ren: rgba(96, 165, 250, 0.1);
+  --c-ren-edge: #60a5fa;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .cmp {
+    --c-add: rgba(74, 222, 128, 0.1);
+    --c-add-strong: rgba(74, 222, 128, 0.28);
+    --c-add-ink: #bbf7d0;
+    --c-add-edge: #4ade80;
+    --c-del: rgba(248, 113, 113, 0.1);
+    --c-del-strong: rgba(248, 113, 113, 0.3);
+    --c-del-ink: #fecaca;
+    --c-del-edge: #f87171;
+    --c-mod: rgba(251, 191, 36, 0.09);
+    --c-mod-edge: #fbbf24;
+    --c-mod-border: rgba(251, 191, 36, 0.35);
+    --c-mark-del: rgba(248, 113, 113, 0.45);
+    --c-mark-add: rgba(74, 222, 128, 0.4);
+    --c-line-no: #6b7791;
+    --c-stripe-a: #121826;
+    --c-stripe-b: #161d2c;
+    --c-sticky: rgba(11, 15, 23, 0.92);
+    --c-badge-ink: #fde68a;
+    --c-badge-bg: rgba(251, 191, 36, 0.2);
+  --c-ren: rgba(96, 165, 250, 0.1);
+  --c-ren-edge: #60a5fa;
+  }
 }
 .cmp *:focus-visible {
   outline: 2px solid var(--c-primary);
@@ -77,7 +136,11 @@
 }
 .cmp-api-changes-toggle {
   display: inline-flex;
+  flex-direction: row;
   align-items: center;
+  font-weight: 500;
+  font-size: var(--fs-sm, 0.8125rem);
+  cursor: pointer;
   gap: 7px;
   white-space: nowrap;
 }
@@ -148,7 +211,7 @@
 .cmp-path {
   font-size: 1.05rem;
   font-weight: 650;
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 .cmp-close {
   display: inline-flex;
@@ -302,8 +365,8 @@
   font-size: 0.74rem;
   line-height: 20px;
   text-align: center;
-  color: #7a4b00;
-  background: #fde7ad;
+  color: var(--c-badge-ink);
+  background: var(--c-badge-bg);
   border-radius: 999px;
 }
 .cmp-view-controls {
@@ -337,7 +400,7 @@
 .cmp-seg button.active {
   color: var(--c-text);
   background: var(--c-surface);
-  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.14);
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(16, 24, 40, 0.14));
 }
 .cmp-toggle-btn {
   padding: 5px 11px;
@@ -393,7 +456,7 @@
 }
 .cmp-skel-bar,
 .cmp-skel-card {
-  background: linear-gradient(90deg, #e9ecf1 25%, #f4f6f9 45%, #e9ecf1 65%);
+  background: linear-gradient(90deg, var(--c-skel-a) 25%, var(--c-skel-b) 45%, var(--c-skel-a) 65%);
   background-size: 300% 100%;
   animation: cmp-shimmer 1.3s ease-in-out infinite;
   border-radius: 10px;
@@ -466,12 +529,12 @@
   transition: box-shadow 0.12s, transform 0.12s;
 }
 .cmp-summary button:hover {
-  box-shadow: 0 4px 14px rgba(16, 24, 40, 0.1);
+  box-shadow: var(--shadow, 0 4px 14px rgba(16, 24, 40, 0.1));
   transform: translateY(-1px);
 }
 .cmp-summary button.is-changed {
   background: var(--c-mod);
-  border-color: #f0d68a;
+  border-color: var(--c-mod-border);
   border-left-color: var(--c-mod-edge);
 }
 .cmp-summary strong {
@@ -537,7 +600,7 @@
   margin: 0 -20px;
   padding: 8px 20px;
   overflow-x: auto;
-  background: rgba(245, 246, 248, 0.94);
+  background: var(--c-sticky);
   backdrop-filter: blur(6px);
   border-bottom: 1px solid var(--c-border);
 }
@@ -580,7 +643,7 @@
   scroll-margin-top: 64px;
 }
 .cmp-section.is-changed {
-  border-color: #efd699;
+  border-color: var(--c-mod-border);
 }
 .cmp-flash {
   animation: cmp-flash 1.1s ease-out;
@@ -810,7 +873,7 @@ details[open] > summary > .cmp-caret {
   width: 44px;
   padding: 0 8px;
   text-align: right;
-  color: #8b96aa;
+  color: var(--c-line-no);
   user-select: none;
   background: var(--c-soft);
   vertical-align: top;
@@ -839,7 +902,7 @@ details[open] > summary > .cmp-caret {
 }
 .cmp-line.cmp-del .cmp-new,
 .cmp-line.cmp-add .cmp-old {
-  background: repeating-linear-gradient(135deg, #f6f7fa, #f6f7fa 6px, #eff1f6 6px, #eff1f6 12px);
+  background: repeating-linear-gradient(135deg, var(--c-stripe-a), var(--c-stripe-a) 6px, var(--c-stripe-b) 6px, var(--c-stripe-b) 12px);
 }
 .cmp-line.cmp-del .cmp-no:first-child,
 .cmp-line.cmp-mod .cmp-no:first-child {
@@ -885,13 +948,13 @@ details[open] > summary > .cmp-caret {
 }
 .cmp-old .cmp-mark,
 .cmp-u-del .cmp-mark {
-  background: #f2a79f;
+  background: var(--c-mark-del);
   text-decoration: line-through;
-  text-decoration-color: rgba(142, 28, 17, 0.55);
+  text-decoration-color: color-mix(in srgb, var(--c-del-ink) 55%, transparent);
 }
 .cmp-new .cmp-mark,
 .cmp-u-add .cmp-mark {
-  background: #86d3a4;
+  background: var(--c-mark-add);
 }
 .cmp-gap td {
   padding: 0;
@@ -989,7 +1052,7 @@ details[open] > summary > .cmp-caret {
   box-shadow: inset 3px 0 0 var(--c-ren-edge);
 }
 .cmp-frow td.cmp-none {
-  color: #8b96aa;
+  color: var(--c-line-no);
 }
 .cmp-fields th.cmp-fstatus,
 .cmp-fstatus {
@@ -1064,7 +1127,7 @@ details[open] > summary > .cmp-caret {
   background: var(--c-del);
   border-radius: 5px;
   text-decoration: line-through;
-  text-decoration-color: rgba(142, 28, 17, 0.45);
+  text-decoration-color: color-mix(in srgb, var(--c-del-ink) 45%, transparent);
 }
 .cmp-to {
   padding: 1px 6px;
