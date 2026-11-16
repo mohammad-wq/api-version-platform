@@ -1,5 +1,5 @@
 function appRootPath(pathname) {
-  const route = pathname.match(/\/(?:login|projects|profile)(?:\/|$)/);
+  const route = pathname.match(/\/projects(?:\/|$)/);
   if (route) return pathname.slice(0, route.index + 1);
 
   const withoutIndex = pathname.replace(/index\.html?$/i, "");

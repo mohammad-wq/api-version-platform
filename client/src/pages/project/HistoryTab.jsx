@@ -1,8 +1,7 @@
 import { useMemo, useState } from "react";
 import { api } from "../../api.js";
-import { useAuth } from "../../auth.jsx";
 import { useAction, useAsync } from "../../hooks.js";
-import { Avatar, EmptyState, ErrorBanner, MethodBadge, SkeletonList, StatusBadge, formatDate, timeAgo } from "../../components/ui.jsx";
+import { EmptyState, ErrorBanner, MethodBadge, SkeletonList, StatusBadge, formatDate, timeAgo } from "../../components/ui.jsx";
 import { Icon } from "../../components/icons.jsx";
 
 const STATUS_FILTERS = [
@@ -16,7 +15,6 @@ const STATUS_FILTERS = [
 const PAGE = 25;
 
 function ProjectHistory({ project }) {
-  const { user: me } = useAuth();
   const [fromTime, setFromTime] = useState(""); // datetime-local values, interpreted in the browser's time zone
   const [toTime, setToTime] = useState("");
   const history = useAsync(
@@ -24,7 +22,6 @@ function ProjectHistory({ project }) {
       api.getRequestHistory(project.id, 100),
     [project.id],
   );
-  const [userId, setUserId] = useState("");
   const [text, setText] = useState("");
   const [method, setMethod] = useState("");
   const [statusClass, setStatusClass] = useState("");
@@ -32,20 +29,18 @@ function ProjectHistory({ project }) {
   const { busy, error, setError, run } = useAction();
 
   const all = history.data ?? [];
-  const mine = all.filter((entry) => entry.userId === me.id).length;
-  const users = useMemo(() => [...new Map(all.filter((e) => e.user).map((e) => [e.user.id, e.user.email])).entries()], [all]);
+  const total = all.length;
   const filtered = useMemo(() => {
     const needle = text.trim().toLowerCase();
     return all.filter((entry) => {
-      if (userId && String(entry.userId) !== userId) return false;
       if (method && entry.method !== method) return false;
       if (statusClass === "none" ? entry.status != null : statusClass && String(entry.status ?? "")[0] !== statusClass) return false;
       if (fromTime && Date.parse(entry.createdAt) < new Date(fromTime).getTime()) return false;
       if (toTime && Date.parse(entry.createdAt) > new Date(toTime).getTime()) return false;
       return !needle || entry.url.toLowerCase().includes(needle);
     });
-  }, [all, text, method, statusClass, userId, fromTime, toTime]);
-  const filtering = Boolean(text.trim() || method || statusClass || userId || fromTime || toTime);
+  }, [all, text, method, statusClass, fromTime, toTime]);
+  const filtering = Boolean(text.trim() || method || statusClass || fromTime || toTime);
 
   // Clearing is confirmed with the app's confirm bar, not window.confirm: it cannot silently
   // block automation and the rest of the UI stays consistent.
@@ -63,7 +58,6 @@ function ProjectHistory({ project }) {
   };
 
   const resetFilters = () => {
-    setUserId("");
     setFromTime("");
     setToTime("");
     setText("");
@@ -81,16 +75,16 @@ function ProjectHistory({ project }) {
           </p>
         </div>
         <div className="row wrap">
-          <button className="btn btn-small" onClick={() => setConfirmClear(true)} disabled={mine === 0} title="Deletes only your own saved requests">
-            <Icon name="trash" /> Clear my history
+          <button className="btn btn-small" onClick={() => setConfirmClear(true)} disabled={total === 0}>
+            <Icon name="trash" /> Clear history
           </button>
         </div>
       </div>
       {confirmClear && (
-        <div className="confirm-bar" role="alertdialog" aria-label="Confirm clearing your request history">
+        <div className="confirm-bar" role="alertdialog" aria-label="Confirm clearing request history">
           <Icon name="alert" />
           <span className="grow">
-            <strong>Delete your {mine} saved request{mine === 1 ? "" : "s"} for “{project.name}”?</strong> Other members' requests are not affected. This cannot be undone.
+            <strong>Delete {total} saved request{total === 1 ? "" : "s"}?</strong> This cannot be undone.
           </span>
           <button className="btn btn-danger-solid" onClick={clear} disabled={busy}>
             {busy ? "Deleting…" : "Yes, delete"}
@@ -107,15 +101,6 @@ function ProjectHistory({ project }) {
             <Icon name="search" />
             <input type="search" placeholder="Filter by URL…" value={text} onChange={(e) => setText(e.target.value)} aria-label="Filter by URL" />
           </div>
-          <select value={userId} onChange={(e) => setUserId(e.target.value)} aria-label="User">
-            <option value="">All users</option>
-            {users.map(([id, email]) => (
-              <option key={id} value={id}>
-                {email}
-                {id === me.id ? " (you)" : ""}
-              </option>
-            ))}
-          </select>
           <select value={method} onChange={(e) => setMethod(e.target.value)} aria-label="Method">
             <option value="">All methods</option>
             {["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => (
@@ -163,7 +148,6 @@ function ProjectHistory({ project }) {
                 <th>Path</th>
                 <th>Status</th>
                 <th>Time</th>
-                <th>User</th>
                 <th>When</th>
               </tr>
             </thead>
@@ -178,12 +162,6 @@ function ProjectHistory({ project }) {
                     <StatusBadge status={entry.status} />
                   </td>
                   <td className="muted nowrap">{entry.durationMs != null ? `${entry.durationMs} ms` : ""}</td>
-                  <td>
-                    <span className="user-cell">
-                      <Avatar name={entry.user?.email} size={20} />
-                      <span className="truncate">{entry.user?.email}</span>
-                    </span>
-                  </td>
                   <td className="muted nowrap" title={formatDate(entry.createdAt)}>
                     {timeAgo(entry.createdAt)}
                   </td>

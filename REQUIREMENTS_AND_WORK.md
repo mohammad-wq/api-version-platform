@@ -37,7 +37,7 @@ Important implementation facts discovered during review:
 
 ## Implementation progress
 
-The local core, CLI and template are implemented. The bundled UI is now the hosted web app's React build in its built-in local mode (`client/`, `npm run build:package`), served by `src/LocalApi.php`, which implements the web client's route names for one implicit user and one project on SQLite. Collaborators, login and project deletion are hidden in local mode. The Test APIs tab and its request history are retained: the runner verifies TLS, and the API only accepts loopback `Host` headers and JSON POST bodies. The former multi-user PHP backend is archived under `legacy/`. Remaining release work is automated test coverage and a Packagist release smoke test.
+The local core, CLI and template are implemented. The bundled UI is now the hosted web app's React build in its built-in local mode (`client/`, `npm run build:package`), served by `src/LocalApi.php`, which implements the web client's route names for one implicit user and one project on SQLite. Login, sign-up, profile, collaborators and project deletion are removed from the client entirely (the UI is always local; no mode detection). The Test APIs tab and its request history are retained: the runner verifies TLS, and the API only accepts loopback `Host` headers and JSON POST bodies. The former multi-user PHP backend is archived under `legacy/`. Remaining release work is automated test coverage and a Packagist release smoke test.
 
 ## Product requirements
 

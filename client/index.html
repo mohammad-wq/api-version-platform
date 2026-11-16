@@ -6,7 +6,7 @@
     <script>
       (() => {
         const path = window.location.pathname;
-        const route = path.match(/\/(?:login|projects|profile)(?:\/|$)/);
+        const route = path.match(/\/projects(?:\/|$)/);
         const root = route
           ? path.slice(0, route.index + 1)
           : path.replace(/index\.html?$/i, "").replace(/[^/]*$/, "");

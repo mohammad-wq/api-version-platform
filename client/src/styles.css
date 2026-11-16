@@ -820,6 +820,51 @@ strong {
 .card .empty {
   background: var(--surface-2);
 }
+.import-review-header {
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+.import-review-title {
+  flex: 1;
+  min-width: 0;
+}
+.import-review-title h4 {
+  margin-bottom: 4px;
+}
+.import-review-title p {
+  margin: 0;
+}
+.btn-back-source {
+  flex: 0 0 auto;
+  min-height: 36px;
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.btn-back-source:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--border-hover);
+  color: var(--text);
+}
+.import-warnings {
+  display: grid;
+  gap: 8px;
+}
+.import-warnings h5 {
+  margin: 0;
+  font-size: var(--fs-sm);
+  font-weight: 650;
+  color: var(--text-2);
+}
+@media (max-width: 640px) {
+  .import-review-header {
+    flex-direction: column;
+  }
+  .btn-back-source {
+    align-self: flex-start;
+  }
+}
 
 /* =====================================================================
    Forms

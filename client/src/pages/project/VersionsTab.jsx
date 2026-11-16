@@ -23,6 +23,23 @@ function jumpOptionsOf(spec) {
 
 const ACCEPTED = /\.(?:json|md|markdown)$/i;
 
+function ParserWarnings({ warnings }) {
+  if (!Array.isArray(warnings) || warnings.length === 0) return null;
+  return (
+    <div className="import-warnings" aria-label="README parser warnings">
+      <h5>README parser warnings <span className="muted">({warnings.length})</span></h5>
+      {warnings.map((warning, index) => (
+        <Notice kind="warn" key={`${warning.code}-${warning.lines?.[0] ?? index}`}>
+          <strong>{warning.code}</strong>
+          {warning.lines && <> · lines {warning.lines[0]}–{warning.lines[1]}</>}
+          {warning.endpoint && <> · <code>{warning.endpoint}</code></>}
+          <br />{warning.message}
+        </Notice>
+      ))}
+    </div>
+  );
+}
+
 /** Click-to-browse or drag-and-drop target for Markdown or OpenAPI JSON files. */
 function Dropzone({ file, onFile, inputRef }) {
   const [drag, setDrag] = useState(false);
@@ -271,10 +288,11 @@ function ImportPanel({ projectId, versions = [], versionsLoaded = true, onImport
       </div>
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <ParserWarnings warnings={error?.warnings} />
       {prepared && (
         <section className="stack import-review" aria-label="OpenAPI review">
-          <div className="row spread">
-            <div>
+          <div className="row spread import-review-header">
+            <div className="import-review-title">
               <h4>Review OpenAPI specification</h4>
               <p className="muted">
                 Parsed as {prepared.sourceType === "markdown" ? "README Markdown" : "OpenAPI JSON"}.
@@ -282,16 +300,11 @@ function ImportPanel({ projectId, versions = [], versionsLoaded = true, onImport
                 {" "}Edit the JSON below; it is revalidated as you type.
               </p>
             </div>
-            <button type="button" className="btn btn-ghost" disabled={busy} onClick={resetPrepared}>Back to source</button>
+            <button type="button" className="btn btn-back-source" disabled={busy} onClick={resetPrepared}>
+              <Icon name="arrowLeft" /> Back to source
+            </button>
           </div>
-          {prepared.warnings?.map((warning, index) => (
-            <Notice kind="warn" key={`${warning.code}-${warning.lines?.[0] ?? index}`}>
-              <strong>{warning.code}</strong>
-              {warning.lines && <> · lines {warning.lines[0]}–{warning.lines[1]}</>}
-              {warning.endpoint && <> · <code>{warning.endpoint}</code></>}
-              <br />{warning.message}
-            </Notice>
-          ))}
+          <ParserWarnings warnings={prepared.warnings} />
           <label>
             <span className="label-line">OpenAPI JSON <small className="muted">{reviewText.length ? `${reviewText.split("\n").length} lines` : ""}</small></span>
             <textarea className="spec-editor" rows={24} value={reviewText} onChange={(event) => setReviewText(event.target.value)} spellCheck={false} />
@@ -659,8 +672,6 @@ export default function VersionsTab({ project, can, reloadProject, revision }) {
                     </div>
                     {version.note && <p className="tl-note">{version.note}</p>}
                     <div className="tl-meta">
-                      <Avatar name={version.author?.email} size={20} />
-                      <span className="truncate">{version.author?.email}</span>
                       <span className="dot-sep" />
                       <time dateTime={version.createdAt} title={formatDate(version.createdAt)}>
                         {timeAgo(version.createdAt)}

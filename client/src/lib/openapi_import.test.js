@@ -60,6 +60,25 @@ test("a failing README parser reports why the parse failed", async () => {
   );
 });
 
+test("preserves README parser warnings when generated OpenAPI fails validation", async () => {
+  const warnings = [{ code: "NO_ENDPOINTS_FOUND", message: "No API endpoints were detected.", lines: [1, 3] }];
+  const openapi = {
+    openapi: "3.0.3",
+    info: { title: "Empty API", version: "1.0.0" },
+    paths: {},
+  };
+  await assert.rejects(
+    () => prepareOpenApiImport("# Empty API", {
+      parseMarkdown: async () => ({ openapi, warnings }),
+    }),
+    (error) => {
+      assert.match(error.message, /at least one HTTP operation/);
+      assert.deepEqual(error.warnings, warnings);
+      return true;
+    },
+  );
+});
+
 test("requires path parameters and responses before a spec can be saved", () => {
   const invalid = structuredClone(validSpec);
   delete invalid.paths["/items/{itemId}"].parameters;

@@ -486,6 +486,7 @@ export async function prepareOpenApiImport(text, { filename = "", parseMarkdown 
   if (validationErrors.length > 0) {
     const error = new Error(validationErrors.join("\n"));
     error.validationErrors = validationErrors;
+    error.warnings = warnings;
     throw error;
   }
   return { openapi, sourceType, warnings, statistics };

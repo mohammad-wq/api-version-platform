@@ -7,7 +7,7 @@ namespace Mohammad\ApiVersionPlatform;
 use PDO;
 
 /**
- * The web client's API surface, served locally for one implicit user and one project.
+ * The web client's API surface for one local project; it has no account or sign-in model.
  *
  * The bundled UI is the same React build as the hosted platform. When its API base ends in /api it asks
  * /api/local/status, switches to local mode, and then calls the same route names as the hosted PHP backend.
@@ -16,7 +16,6 @@ use PDO;
 final class LocalApi
 {
     public const PROJECT_ID = 1;
-    private const USER = ['id' => 1, 'name' => 'Local user', 'email' => 'local', 'role' => 'admin', 'status' => 'active'];
     private const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
     /** Same limit as the UI's import check, so no README is parsed that the UI would refuse anyway. */
     private const MAX_PARSE_BYTES = 5 * 1024 * 1024;
@@ -36,7 +35,6 @@ final class LocalApi
             'GET /local/readme' => fn () => $this->readmeStatus(),
             'POST /local/readme/parse' => fn () => $this->parseReadme(),
             'POST /local/readme/save' => fn () => $this->saveReadme(),
-            'GET /auth/fetch/getProfile.php' => fn () => self::USER,
             'GET /projects/fetch/getProjects.php' => fn () => [$this->project()],
             'GET /projects/fetch/getProject.php' => fn () => $this->project(),
             'POST /projects/modify/insertUpdateProject.php' => fn () => $this->updateProject(),
@@ -166,12 +164,8 @@ final class LocalApi
             'name' => $this->metadata('project.name') ?? basename($this->projectRoot),
             'description' => $this->metadata('project.description'),
             'environments' => json_decode($this->metadata('project.environments') ?? '[]', true) ?: [],
-            'owner_id' => self::USER['id'],
-            'owner' => self::USER,
-            'members' => [],
             'versions' => $versions,
             'versions_count' => count($versions),
-            'members_count' => 0,
             'latest_version' => $latest,
             'created_at' => $this->metadata('project.created_at') ?? $this->initCreatedAt(),
         ];
@@ -312,9 +306,6 @@ final class LocalApi
             'from_readme' => $row['source_hash'] !== null,
             'is_latest' => $isLatest,
             'created_at' => $row['created_at'],
-            'author_id' => self::USER['id'],
-            'author_name' => self::USER['name'],
-            'author_email' => self::USER['email'],
             'statistics' => $row['statistics'] ?? null,
             'warnings' => $row['warnings'] ?? [],
         ];
@@ -487,13 +478,8 @@ final class LocalApi
     private function history(): array
     {
         $limit = max(1, min(100, (int) ($_GET['limit'] ?? 100)));
-        $rows = $this->pdo->query("SELECT * FROM request_history ORDER BY id DESC LIMIT {$limit}")->fetchAll(PDO::FETCH_ASSOC);
-        return array_map(fn (array $row) => $row + [
-            'project_id' => self::PROJECT_ID,
-            'user_id' => self::USER['id'],
-            'user_name' => self::USER['name'],
-            'user_email' => self::USER['email'],
-        ], $rows);
+        return $this->pdo->query("SELECT id, method, url, response_status, duration_ms, created_at FROM request_history ORDER BY id DESC LIMIT {$limit}")
+            ->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /** @return array{project_id: int} */
