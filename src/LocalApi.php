@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Mohammad\ApiVersionPlatform;
 
-use PDO;
-
 /**
  * The web client's API surface for one local project; it has no account or sign-in model.
  *
@@ -20,11 +18,11 @@ final class LocalApi
     /** Same limit as the UI's import check, so no README is parsed that the UI would refuse anyway. */
     private const MAX_PARSE_BYTES = 5 * 1024 * 1024;
 
-    private PDO $pdo;
+    private Cloud $cloud;
 
-    public function __construct(private VersionService $versions, Storage $storage, private string $projectRoot, private string $readmePath)
+    public function __construct(private VersionService $versions, private Storage $storage, private string $projectRoot, private string $readmePath, string $cloudUrl = Cloud::DEFAULT_URL)
     {
-        $this->pdo = $storage->pdo();
+        $this->cloud = new Cloud($storage->directory(), $cloudUrl);
     }
 
     /** Handles $route (the path after /api). Returns false when the route is not part of this surface. */
@@ -44,6 +42,13 @@ final class LocalApi
             'GET /versions/fetch/getLatestVersion.php' => fn () => $this->latestVersion(),
             'POST /versions/modify/insertUpdateVersion.php' => fn () => $this->saveVersion(),
             'POST /versions/remove/removeVersion.php' => fn () => $this->removeVersion(),
+            'GET /cloud/status' => fn () => $this->cloudStatus(),
+            'POST /cloud/login' => fn () => $this->cloudLogin(),
+            'POST /cloud/logout' => fn () => $this->cloudLogout(),
+            'GET /cloud/projects' => fn () => $this->cloud->projects(),
+            'GET /cloud/versions' => fn () => $this->cloud->versions((int) (is_string($_GET['project_id'] ?? null) ? $_GET['project_id'] : 0)),
+            'POST /cloud/publish' => fn () => $this->cloudPublish(),
+            'POST /cloud/import' => fn () => $this->cloudImport(),
             'POST /runner/execute.php' => fn () => $this->execute(),
             'GET /request_history/fetch/getHistory.php' => fn () => $this->history(),
             'POST /request_history/remove/clearHistory.php' => fn () => $this->clearHistory(),
@@ -56,17 +61,16 @@ final class LocalApi
         try {
             $data = $handler();
             // A new version answers 201 whether it came from an import or from the README banner (as in npm).
-            $created = ($route === '/versions/modify/insertUpdateVersion.php' && empty($this->input()['id'])) || $route === '/local/readme/save';
+            $created = ($route === '/versions/modify/insertUpdateVersion.php' && empty($this->input()['id'])) || $route === '/local/readme/save' || $route === '/cloud/import';
             self::send($created ? 201 : 200, 'Success', $data);
+        } catch (CloudException $e) {
+            self::send($e->status, $e->getMessage());
         } catch (\OutOfBoundsException $e) {
             self::send(404, $e->getMessage());
         } catch (\OverflowException $e) {
             self::send(409, $e->getMessage());
         } catch (\InvalidArgumentException $e) {
             self::send(400, $e->getMessage());
-        } catch (\PDOException $e) {
-            if ($e->getCode() === '23000') self::send(409, 'A version with this label already exists.');
-            throw $e;
         } catch (\RuntimeException $e) {
             self::send(422, $e->getMessage());
         }
@@ -135,7 +139,8 @@ final class LocalApi
         if (strlen($markdown) > self::MAX_PARSE_BYTES) {
             throw new \InvalidArgumentException('README Markdown is too large (5 MB maximum).');
         }
-        return \MarkdownOpenApiParser::parse($markdown);
+        $result = MarkdownOpenApiParser::parse($markdown);
+        return $result;
     }
 
     /** Saves the working README as a version. The client sends the label it showed; otherwise the next one is suggested. */
@@ -313,6 +318,76 @@ final class LocalApi
         return $result;
     }
 
+    // Cloud (the hosted platform): sign in, browse its projects, publish and import versions
+
+    /** @return array<string, mixed> */
+    private function cloudStatus(): array
+    {
+        return $this->cloud->status() + [
+            'linkedProject' => ($id = (int) $this->storage->meta('cloud.project_id')) > 0
+                ? ['id' => $id, 'name' => $this->storage->meta('cloud.project_name'), 'url' => $this->storage->meta('cloud.project_url')] : null,
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function cloudLogin(): array
+    {
+        $data = $this->input();
+        $status = $this->cloud->login(isset($data['url']) ? self::text($data, 'url') : null, self::text($data, 'email'), self::text($data, 'password'));
+        return $status + ['linkedProject' => $this->cloudStatus()['linkedProject']];
+    }
+
+    /** @return array{connected: bool} */
+    private function cloudLogout(): array
+    {
+        $this->cloud->logout();
+        return ['connected' => false];
+    }
+
+    /**
+     * Publishes a local version to a cloud project: `project_id` of an existing one, or `new_project_name` to
+     * create it first. The project is remembered, so the next publish defaults to it.
+     *
+     * @return array<string, mixed>
+     */
+    private function cloudPublish(): array
+    {
+        $data = $this->input();
+        $local = $this->versions->byId(is_scalar($data['version_id'] ?? null) ? (int) $data['version_id'] : 0);
+        if ($local === null) throw new \OutOfBoundsException('Version not found');
+        $projectId = is_scalar($data['project_id'] ?? null) ? (int) $data['project_id'] : 0;
+        $created = false;
+        if ($projectId <= 0) {
+            $name = trim(self::text($data, 'new_project_name'));
+            if ($name === '') throw new \InvalidArgumentException('Choose a cloud project or give a name for a new one.');
+            $projectId = $this->cloud->createProject($name, trim(self::text($data, 'description')));
+            $created = true;
+        }
+        $label = trim(self::text($data, 'version')) ?: (string) $local['label'];
+        $note = trim(self::text($data, 'note')) ?: ($local['note'] ?? null);
+        $published = $this->cloud->publish($projectId, $label, $note, $local['openapi']);
+        $name = $created ? trim(self::text($data, 'new_project_name')) : trim(self::text($data, 'project_name'));
+        $this->storage->setMeta('cloud.project_id', (string) $projectId);
+        if ($name !== '') $this->storage->setMeta('cloud.project_name', $name);
+        $this->storage->setMeta('cloud.project_url', rtrim((string) $this->cloud->status()['url'], '/') . '/projects/' . $projectId);
+        return $published + ['projectCreated' => $created, 'url' => $this->storage->meta('cloud.project_url')];
+    }
+
+    /** Copies a cloud version into the local project as an OpenAPI-only version. @return array<string, mixed> */
+    private function cloudImport(): array
+    {
+        $data = $this->input();
+        $remote = $this->cloud->version(is_scalar($data['version_id'] ?? null) ? (int) $data['version_id'] : 0);
+        $label = trim(self::text($data, 'label')) ?: $remote['version'];
+        $json = json_encode($remote['openapi'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $openapi = json_decode($json, true);
+        if (!is_array($openapi) || !isset($openapi['openapi']) || !is_array($openapi['paths'] ?? null)) {
+            throw new \InvalidArgumentException('The cloud version is not an OpenAPI document with "openapi" and "paths".');
+        }
+        $note = trim(self::text($data, 'note')) ?: ($remote['note'] ?? '');
+        return $this->versionRow($this->versions->createFromOpenApi($label, (string) $note, $openapi, $json), true);
+    }
+
     // API testing
 
     /** Sends the request the Test APIs tab built. @return array<string, mixed> */
@@ -339,27 +414,55 @@ final class LocalApi
             if (!preg_match('/[\r\n]/', $name . $value)) $headerLines[] = "{$name}: {$value}";
         }
         $payload = $body === null ? null : (is_array($body) ? json_encode($body, JSON_UNESCAPED_SLASHES) : (is_bool($body) ? json_encode($body) : (string) $body));
-        $context = stream_context_create(['http' => [
-            'method' => $method,
-            'header' => $headerLines,
-            'content' => $payload,
-            'ignore_errors' => true,
-            'follow_location' => 1,
-            'max_redirects' => 5,
-            'timeout' => 30,
-            'protocol_version' => 1.1,
-        ]]);
-
-        set_time_limit(60); // longer than the 30 s request timeout, so a slow API fails with a message, not a fatal error
+        set_time_limit(120); // longer than the per-hop 30 s timeout, so a slow API fails with a message, not a fatal error
         $start = microtime(true);
-        $http_response_header = [];
-        $responseBody = @file_get_contents($url, false, $context, 0, self::MAX_RESPONSE_BYTES);
+        $startedPrivate = self::isPrivateHost((string) parse_url($url, PHP_URL_HOST));
+        $currentUrl = $url;
+        $currentMethod = $method;
+        $currentPayload = $payload;
+        $blockedRedirect = null;
+        // Redirects are followed here (at most 5) so a public API cannot bounce the request into a private address.
+        for ($hop = 0;; $hop++) {
+            $context = stream_context_create(['http' => [
+                'method' => $currentMethod,
+                'header' => $headerLines,
+                'content' => $currentPayload,
+                'ignore_errors' => true,
+                'follow_location' => 0,
+                'timeout' => 30,
+                'protocol_version' => 1.1,
+            ]]);
+            $http_response_header = [];
+            $responseBody = @file_get_contents($currentUrl, false, $context, 0, self::MAX_RESPONSE_BYTES);
+            $rawHeaders = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : $http_response_header;
+            $hopStatus = isset($rawHeaders[0]) && preg_match('#^HTTP/\S+\s+(\d{3})#', $rawHeaders[0], $m) ? (int) $m[1] : null;
+            $location = null;
+            foreach ($rawHeaders as $line) {
+                if (stripos($line, 'location:') === 0) $location = trim(substr($line, 9));
+            }
+            if (!in_array($hopStatus, [301, 302, 303, 307, 308], true) || $location === null || $location === '') break;
+            $next = self::resolveRedirect($currentUrl, $location);
+            if ($next === null || $hop >= 5) break; // leave the redirect response itself as the answer
+            if (!$startedPrivate && self::isPrivateHost((string) parse_url($next, PHP_URL_HOST))) {
+                $blockedRedirect = $next;
+                break;
+            }
+            if ($hopStatus === 303 || (in_array($hopStatus, [301, 302], true) && $currentMethod === 'POST')) {
+                $currentMethod = 'GET';
+                $currentPayload = null;
+            }
+            $currentUrl = $next;
+        }
         $durationMs = (int) round((microtime(true) - $start) * 1000);
-        $rawHeaders = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : $http_response_header;
+        if ($blockedRedirect !== null) {
+            $message = "Request blocked: the server redirected to a private address ({$blockedRedirect}).";
+            $this->recordHistory($data, $method, $url, null, $durationMs);
+            throw new \RuntimeException($message);
+        }
         if ($responseBody === false && !$rawHeaders) {
             $reason = error_get_last()['message'] ?? 'no response';
             $message = 'Request execution failed: ' . preg_replace('/^file_get_contents\([^)]*\):\s*/', '', $reason);
-            $this->recordHistory($data, $method, $url, $headers, $payload, null, [], $message, $durationMs);
+            $this->recordHistory($data, $method, $url, null, $durationMs);
             throw new \RuntimeException($message);
         }
 
@@ -379,53 +482,55 @@ final class LocalApi
         $parsed = json_decode($responseBody, true);
         $parsedBody = json_last_error() === JSON_ERROR_NONE ? $parsed : $responseBody;
 
-        $this->recordHistory($data, $method, $url, $headers, $payload, $status, $responseHeaders, $responseBody, $durationMs);
+        $this->recordHistory($data, $method, $url, $status, $durationMs);
 
         return ['status' => $status, 'headers' => $responseHeaders, 'body' => $parsedBody, 'duration_ms' => $durationMs];
     }
 
-    private const HISTORY_REDACTED = '[REDACTED]';
-    /** Names whose values never reach the history table; same rule as the hosted backend and the npm package. */
+    /** True for loopback, link-local and private-range hosts (the ones a public API must not redirect a request to). */
+    private static function isPrivateHost(string $host): bool
+    {
+        $host = trim(strtolower($host), '[]');
+        if ($host === '' || $host === 'localhost' || str_ends_with($host, '.localhost')) return true;
+        $ip = filter_var($host, FILTER_VALIDATE_IP) ? $host : gethostbyname($host);
+        if (!filter_var($ip, FILTER_VALIDATE_IP)) return false; // unresolvable: the request itself will fail
+        return !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE);
+    }
+
+    /** An absolute http(s) URL for a Location header, or null when it is not one. */
+    private static function resolveRedirect(string $base, string $location): ?string
+    {
+        if (preg_match('#^https?://#i', $location)) return $location;
+        $parts = parse_url($base);
+        if (!isset($parts['scheme'], $parts['host'])) return null;
+        $origin = $parts['scheme'] . '://' . $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : '');
+        if (str_starts_with($location, '//')) return $parts['scheme'] . ':' . $location;
+        if (str_starts_with($location, '/')) return $origin . $location;
+        $dir = preg_replace('#[^/]*$#', '', $parts['path'] ?? '/');
+        return $origin . ($dir === '' ? '/' : $dir) . $location;
+    }
+
+    /** Names whose values never reach the history; same rule as the hosted backend and the npm package. */
     private const HISTORY_SECRET_NAME = '/(authorization|cookie|session|token|secret|passw(or)?d|credential|api[-_]?key|private[-_]?key)/i';
 
     /**
-     * Records a Test APIs call (also one that got no response: status NULL) with secrets redacted from the
-     * headers, the URL and JSON/form bodies. A history problem never turns the request into an error.
+     * Records a Test APIs call (also one that got no response: status null). Only the method, URL, status and
+     * timing are kept, with secret-looking query values redacted. A history problem never turns the request into an error.
      *
      * @param array<string, mixed> $data
-     * @param array<string, mixed> $headers
-     * @param array<string, string> $responseHeaders
      */
-    private function recordHistory(array $data, string $method, string $url, array $headers, ?string $payload, ?int $status, array $responseHeaders, string $responseBody, int $durationMs): void
+    private function recordHistory(array $data, string $method, string $url, ?int $status, int $durationMs): void
     {
         if (empty($data['save_history'])) return;
         try {
-            $this->pdo->prepare('INSERT INTO request_history (environment, method, url, request_headers, request_body, response_status, response_headers, response_body, duration_ms, created_at)
-                VALUES (:environment, :method, :url, :request_headers, :request_body, :response_status, :response_headers, :response_body, :duration_ms, :created_at)')
-                ->execute([
-                    'environment' => trim(is_scalar($data['environment'] ?? null) ? (string) $data['environment'] : '') ?: null,
-                    'method' => $method, 'url' => self::redactUrl($url),
-                    'request_headers' => json_encode(self::redactHeaders($headers)), 'request_body' => self::redactBody($payload),
-                    'response_status' => $status, 'response_headers' => json_encode(self::redactHeaders($responseHeaders)),
-                    'response_body' => self::redactBody($responseBody), 'duration_ms' => $durationMs,
-                    'created_at' => gmdate('c'),
-                ]);
+            $this->storage->addHistory([
+                'environment' => trim(is_scalar($data['environment'] ?? null) ? (string) $data['environment'] : '') ?: null,
+                'method' => $method, 'url' => self::redactUrl($url),
+                'response_status' => $status, 'duration_ms' => $durationMs, 'created_at' => gmdate('c'),
+            ]);
         } catch (\Throwable $e) {
             error_log('Could not save the request history: ' . $e->getMessage());
         }
-    }
-
-    private static function isSecretName(string $name): bool
-    {
-        return preg_match(self::HISTORY_SECRET_NAME, $name) === 1;
-    }
-
-    /** @param array<string, mixed> $headers */
-    private static function redactHeaders(array $headers): array
-    {
-        $safe = [];
-        foreach ($headers as $name => $value) $safe[$name] = is_string($name) && self::isSecretName($name) ? self::HISTORY_REDACTED : $value;
-        return $safe;
     }
 
     private static function redactUrl(string $url): string
@@ -433,59 +538,24 @@ final class LocalApi
         $query = parse_url($url, PHP_URL_QUERY);
         if (!is_string($query) || $query === '') return $url;
         $fragment = parse_url($url, PHP_URL_FRAGMENT);
-        return substr($url, 0, (int) strpos($url, '?')) . '?' . self::redactPairs($query) . (is_string($fragment) ? '#' . $fragment : '');
-    }
-
-    private static function redactPairs(string $pairs): string
-    {
-        return implode('&', array_map(function (string $pair): string {
+        $pairs = implode('&', array_map(function (string $pair): string {
             [$name] = explode('=', $pair, 2);
-            return self::isSecretName(urldecode($name)) ? $name . '=' . self::HISTORY_REDACTED : $pair;
-        }, explode('&', $pairs)));
-    }
-
-    /** Objects stay objects (`{}` is not stored as `[]`); a secret-looking field is replaced whole. */
-    private static function redactJson(mixed $value, int $depth = 0): mixed
-    {
-        if ($depth > 32) return $value;
-        if ($value instanceof \stdClass) {
-            foreach (get_object_vars($value) as $key => $item) {
-                $value->{$key} = self::isSecretName((string) $key) ? self::HISTORY_REDACTED : self::redactJson($item, $depth + 1);
-            }
-        } elseif (is_array($value)) {
-            foreach ($value as $key => $item) {
-                $value[$key] = is_string($key) && self::isSecretName($key) ? self::HISTORY_REDACTED : self::redactJson($item, $depth + 1);
-            }
-        }
-        return $value;
-    }
-
-    private static function redactBody(?string $body, int $limit = 100000): ?string
-    {
-        if ($body === null || $body === '') return null;
-        $decoded = json_decode($body);
-        if (json_last_error() === JSON_ERROR_NONE && (is_object($decoded) || is_array($decoded))) {
-            $text = (string) json_encode(self::redactJson($decoded), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        } elseif (preg_match('/^[^=&\s]+=[^&]*(&[^=&\s]+=[^&]*)*$/', $body)) {
-            $text = self::redactPairs($body);
-        } else {
-            $text = $body;
-        }
-        return substr($text, 0, $limit);
+            return preg_match(self::HISTORY_SECRET_NAME, urldecode($name)) === 1 ? $name . '=[REDACTED]' : $pair;
+        }, explode('&', $query)));
+        return substr($url, 0, (int) strpos($url, '?')) . '?' . $pairs . (is_string($fragment) ? '#' . $fragment : '');
     }
 
     /** @return list<array<string, mixed>> */
     private function history(): array
     {
         $limit = max(1, min(100, (int) ($_GET['limit'] ?? 100)));
-        return $this->pdo->query("SELECT id, method, url, response_status, duration_ms, created_at FROM request_history ORDER BY id DESC LIMIT {$limit}")
-            ->fetchAll(PDO::FETCH_ASSOC);
+        return array_map(static fn (array $row): array => array_intersect_key($row, array_flip(['id', 'method', 'url', 'response_status', 'duration_ms', 'created_at'])), $this->storage->history($limit));
     }
 
     /** @return array{project_id: int} */
     private function clearHistory(): array
     {
-        $this->pdo->exec('DELETE FROM request_history');
+        $this->storage->clearHistory();
         return ['project_id' => self::PROJECT_ID];
     }
 
@@ -507,15 +577,11 @@ final class LocalApi
 
     private function metadata(string $key): ?string
     {
-        $stmt = $this->pdo->prepare('SELECT value FROM metadata WHERE key = :key');
-        $stmt->execute(['key' => $key]);
-        $value = $stmt->fetchColumn();
-        return $value === false || $value === '' ? null : (string) $value;
+        return $this->storage->meta($key);
     }
 
     private function setMetadata(string $key, string $value): void
     {
-        $this->pdo->prepare('INSERT INTO metadata (key, value) VALUES (:key, :value) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-            ->execute(['key' => $key, 'value' => $value]);
+        $this->storage->setMeta($key, $value);
     }
 }

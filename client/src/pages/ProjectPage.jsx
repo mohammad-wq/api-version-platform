@@ -10,11 +10,13 @@ import ReadmeSyncBanner from "../components/ReadmeSyncBanner.jsx";
 import VersionsTab from "./project/VersionsTab.jsx";
 import TestTab from "./project/TestTab.jsx";
 import HistoryTab from "./project/HistoryTab.jsx";
+import CloudTab from "./project/CloudTab.jsx";
 
 const TABS = [
   { id: "versions", label: "Versions", icon: "layers", count: "versions" },
   { id: "test", label: "Test APIs", icon: "play" },
   { id: "history", label: "History", icon: "clock" },
+  { id: "cloud", label: "Cloud", icon: "globe" },
 ];
 
 
@@ -222,6 +224,7 @@ export default function ProjectPage() {
           {tab === "versions" && <VersionsTab {...tabProps} goToTab={selectTab} />}
           {tab === "test" && <TestTab {...tabProps} goToTab={selectTab} />}
           {tab === "history" && <HistoryTab {...tabProps} />}
+          {tab === "cloud" && <CloudTab {...tabProps} />}
         </section>
       </div>
     </>

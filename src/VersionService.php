@@ -4,18 +4,12 @@ declare(strict_types=1);
 
 namespace Mohammad\ApiVersionPlatform;
 
-use PDO;
-
 final class VersionService
 {
     public const MAX_LABEL_LENGTH = 50;
 
-    private PDO $pdo;
-
-    public function __construct(private string $readmePath, Storage $storage)
+    public function __construct(private string $readmePath, private Storage $storage)
     {
-        $this->pdo = $storage->pdo();
-        require_once __DIR__ . '/MarkdownOpenApiParser.php';
     }
 
     /** @return array<string, mixed> */
@@ -28,14 +22,14 @@ final class VersionService
         if ($markdown === false) {
             return ['state' => 'missing', 'readme_path' => $this->readmePath, 'message' => 'README file cannot be read.'];
         }
-        $parse = \MarkdownOpenApiParser::parse($markdown);
+        $parse = MarkdownOpenApiParser::parse($markdown);
         if (($parse['statistics']['endpoints'] ?? 0) === 0) {
             return ['state' => 'invalid', 'readme_path' => $this->readmePath, 'message' => "No API endpoints were found in {$this->readmePath}. See `avp template` for the format.", 'warnings' => $parse['warnings']];
         }
         $sourceHash = SourceHasher::hash($markdown);
         $latest = $this->latest();
         if ($latest === null) {
-            return ['state' => 'uninitialized', 'readme_path' => $this->readmePath, 'source_hash' => $sourceHash];
+            return ['state' => 'uninitialized', 'readme_path' => $this->readmePath, 'source_hash' => $sourceHash, 'warnings' => $parse['warnings']];
         }
         return [
             'state' => hash_equals($latest['source_hash'], $sourceHash) ? 'clean' : 'modified',
@@ -43,6 +37,7 @@ final class VersionService
             'source_hash' => $sourceHash,
             'latest_version' => $latest['label'],
             'latest_source_hash' => $latest['source_hash'],
+            'warnings' => $parse['warnings'],
         ];
     }
 
@@ -57,7 +52,7 @@ final class VersionService
         if ($markdown === false) {
             throw new \RuntimeException("Could not read README: {$this->readmePath}");
         }
-        $parse = \MarkdownOpenApiParser::parse($markdown);
+        $parse = MarkdownOpenApiParser::parse($markdown);
         if (($parse['statistics']['endpoints'] ?? 0) === 0) {
             throw new \RuntimeException('No API endpoints were found; version was not created.');
         }
@@ -73,61 +68,57 @@ final class VersionService
         $createdAt = gmdate('c');
 
         // One row: the baseline is the newest version with a source hash, so this insert also advances it.
-        $this->assertLabelFree($label);
-        $insert = $this->pdo->prepare('INSERT INTO versions (label, note, markdown, source_hash, openapi_json, openapi_hash, parser_warnings_json, parser_statistics_json, created_at)
-            VALUES (:label, :note, :markdown, :source_hash, :openapi_json, :openapi_hash, :warnings, :statistics, :created_at)');
-        $insert->execute([
-            'label' => $label, 'note' => $note !== '' ? $note : null, 'markdown' => $source,
-            'source_hash' => $sourceHash, 'openapi_json' => $openapiJson, 'openapi_hash' => $openapiHash,
-            'warnings' => json_encode($parse['warnings'], JSON_THROW_ON_ERROR),
-            'statistics' => json_encode($parse['statistics'], JSON_THROW_ON_ERROR), 'created_at' => $createdAt,
-        ]);
-        $id = (int) $this->pdo->lastInsertId();
+        $id = $this->storage->locked(function () use ($label, $note, $source, $sourceHash, $openapiJson, $openapiHash, $parse, $createdAt): int {
+            $this->assertLabelFree($label);
+            return $this->storage->addVersion([
+                'label' => $label, 'note' => $note !== '' ? $note : null, 'source_hash' => $sourceHash, 'openapi_hash' => $openapiHash,
+                'warnings' => $parse['warnings'], 'statistics' => $parse['statistics'], 'created_at' => $createdAt,
+            ], $source, $openapiJson);
+        });
         return ['id' => $id, 'label' => $label, 'source_hash' => $sourceHash, 'openapi_hash' => $openapiHash, 'created_at' => $createdAt, 'parse' => ['warnings' => $parse['warnings'], 'statistics' => $parse['statistics']]];
     }
 
-    /** @return list<array<string, mixed>> */
+    /** @return list<array<string, mixed>> Newest first */
     public function all(): array
     {
-        $rows = $this->pdo->query('SELECT id, label, note, source_hash, openapi_hash, parser_warnings_json, parser_statistics_json, created_at FROM versions ORDER BY id DESC')->fetchAll(PDO::FETCH_ASSOC);
-        foreach ($rows as &$row) {
-            $row['warnings'] = json_decode($row['parser_warnings_json'], true);
-            $row['statistics'] = json_decode($row['parser_statistics_json'], true);
-            unset($row['parser_warnings_json'], $row['parser_statistics_json']);
-        }
-        return $rows;
+        return array_map(static fn (array $row): array => self::light($row), array_reverse($this->storage->versions()));
     }
 
     /** @return array<string, mixed>|null */
     public function get(string $label): ?array
     {
-        $stmt = $this->pdo->prepare('SELECT * FROM versions WHERE label = :label');
-        $stmt->execute(['label' => $label]);
-        $row = $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
-        if ($row !== null) {
-            // Objects, not arrays: an array decode turns every empty object `{}` into `[]` when served.
-            $row['openapi'] = json_decode($row['openapi_json']);
-            $row['warnings'] = json_decode($row['parser_warnings_json'], true);
-            $row['statistics'] = json_decode($row['parser_statistics_json'], true);
-            unset($row['openapi_json'], $row['parser_warnings_json'], $row['parser_statistics_json']);
+        foreach ($this->storage->versions() as $row) {
+            if ($row['label'] === $label) return $this->byId((int) $row['id']);
         }
-        return $row;
+        return null;
     }
 
     /** @return array<string, mixed>|null */
     public function byId(int $id): ?array
     {
-        $stmt = $this->pdo->prepare('SELECT label FROM versions WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        $label = $stmt->fetchColumn();
-        return $label === false ? null : $this->get((string) $label);
+        $row = $this->storage->version($id);
+        if ($row === null) return null;
+        // Objects, not arrays: an array decode turns every empty object `{}` into `[]` when served.
+        $row['openapi'] = json_decode($row['openapi_json']);
+        unset($row['openapi_json']);
+        return $row;
     }
 
     /** The newest version of any kind; the UI treats it as "latest". */
     public function newestId(): ?int
     {
-        $id = $this->pdo->query('SELECT MAX(id) FROM versions')->fetchColumn();
-        return $id === null || $id === false ? null : (int) $id;
+        $versions = $this->storage->versions();
+        return $versions === [] ? null : (int) end($versions)['id'];
+    }
+
+    /** The version list fields (no Markdown or OpenAPI payload). @return array<string, mixed> */
+    private static function light(array $row): array
+    {
+        return [
+            'id' => (int) $row['id'], 'label' => $row['label'], 'note' => $row['note'] ?? null,
+            'source_hash' => $row['source_hash'] ?? null, 'openapi_hash' => $row['openapi_hash'],
+            'warnings' => $row['warnings'] ?? [], 'statistics' => $row['statistics'] ?? null, 'created_at' => $row['created_at'],
+        ];
     }
 
     /**
@@ -141,16 +132,14 @@ final class VersionService
     {
         $label = self::label($label);
         $openapiJson ??= json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-        $this->assertLabelFree($label);
-        $insert = $this->pdo->prepare('INSERT INTO versions (label, note, markdown, source_hash, openapi_json, openapi_hash, parser_warnings_json, parser_statistics_json, created_at)
-            VALUES (:label, :note, NULL, NULL, :openapi_json, :openapi_hash, :warnings, :statistics, :created_at)');
-        $insert->execute([
-            'label' => $label, 'note' => $note !== '' ? $note : null,
-            'openapi_json' => $openapiJson, 'openapi_hash' => hash('sha256', $openapiJson), 'warnings' => '[]',
-            'statistics' => json_encode(['endpoints' => count(self::operations($openapi))], JSON_THROW_ON_ERROR),
-            'created_at' => gmdate('c'),
-        ]);
-        return $this->byId((int) $this->pdo->lastInsertId()) ?? [];
+        $id = $this->storage->locked(function () use ($label, $note, $openapi, $openapiJson): int {
+            $this->assertLabelFree($label);
+            return $this->storage->addVersion([
+                'label' => $label, 'note' => $note !== '' ? $note : null, 'source_hash' => null, 'openapi_hash' => hash('sha256', $openapiJson),
+                'warnings' => [], 'statistics' => ['endpoints' => count(self::operations($openapi))], 'created_at' => gmdate('c'),
+            ], null, $openapiJson);
+        });
+        return $this->byId($id) ?? [];
     }
 
     /**
@@ -161,32 +150,26 @@ final class VersionService
      */
     public function update(int $id, ?string $label, string $note, ?array $openapi, ?string $openapiJson = null): void
     {
-        $fields = ['note = :note'];
-        $params = ['id' => $id, 'note' => $note !== '' ? $note : null];
+        $fields = ['note' => $note !== '' ? $note : null];
         if ($label !== null && trim($label) !== '') {
-            $fields[] = 'label = :label';
-            $params['label'] = self::label($label);
-            $this->assertLabelFree($params['label'], $id);
+            $fields['label'] = self::label($label);
         }
+        $json = null;
         if ($openapi !== null) {
-            $openapiJson ??= json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-            $fields[] = 'openapi_json = :openapi_json';
-            $fields[] = 'openapi_hash = :openapi_hash';
-            $params['openapi_json'] = $openapiJson;
-            $params['openapi_hash'] = hash('sha256', $openapiJson);
+            $json = $openapiJson ?? json_encode($openapi, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $fields['openapi_hash'] = hash('sha256', $json);
         }
-        $stmt = $this->pdo->prepare('UPDATE versions SET ' . implode(', ', $fields) . ' WHERE id = :id');
-        $stmt->execute($params);
-        if ($stmt->rowCount() === 0) {
-            throw new \OutOfBoundsException('Version not found.');
-        }
+        $this->storage->locked(function () use ($id, $fields, $json): void {
+            if (isset($fields['label'])) $this->assertLabelFree($fields['label'], $id);
+            if (!$this->storage->updateVersion($id, $fields, $json)) {
+                throw new \OutOfBoundsException('Version not found.');
+            }
+        });
     }
 
     public function delete(int $id): void
     {
-        $stmt = $this->pdo->prepare('DELETE FROM versions WHERE id = :id');
-        $stmt->execute(['id' => $id]);
-        if ($stmt->rowCount() === 0) {
+        if (!$this->storage->deleteVersion($id)) {
             throw new \OutOfBoundsException('Version not found.');
         }
     }
@@ -198,10 +181,10 @@ final class VersionService
      */
     private function assertLabelFree(string $label, int $exceptId = 0): void
     {
-        $stmt = $this->pdo->prepare('SELECT 1 FROM versions WHERE lower(label) = lower(:label) AND id <> :id');
-        $stmt->execute(['label' => $label, 'id' => $exceptId]);
-        if ($stmt->fetchColumn()) {
-            throw new \OverflowException("Version '{$label}' already exists.");
+        foreach ($this->storage->versions() as $row) {
+            if ((int) $row['id'] !== $exceptId && strtolower((string) $row['label']) === strtolower($label)) {
+                throw new \OverflowException("Version '{$label}' already exists.");
+            }
         }
     }
 
@@ -222,8 +205,8 @@ final class VersionService
     /** Same rule as the web UI and the npm package (see VersionNumber). */
     public function nextLabel(): string
     {
-        $labels = $this->pdo->query('SELECT label FROM versions ORDER BY id ASC')->fetchAll(PDO::FETCH_COLUMN);
-        return VersionNumber::suggestNext(array_map('strval', $labels)) ?? 'v1.0.0';
+        $labels = array_map(static fn (array $row): string => (string) $row['label'], $this->storage->versions());
+        return VersionNumber::suggestNext($labels) ?? 'v1.0.0';
     }
 
     /**
@@ -235,13 +218,11 @@ final class VersionService
     {
         $markdown = is_readable($this->readmePath) ? file_get_contents($this->readmePath) : false;
         if ($markdown === false) return null;
-        $current = self::operations(\MarkdownOpenApiParser::parse($markdown)['openapi'] ?? []);
+        $current = self::operations(MarkdownOpenApiParser::parse($markdown)['openapi'] ?? []);
         $baseline = [];
         $latest = $this->latest();
         if ($latest !== null) {
-            $stmt = $this->pdo->prepare('SELECT openapi_json FROM versions WHERE id = :id');
-            $stmt->execute(['id' => $latest['id']]);
-            $baseline = self::operations(json_decode((string) $stmt->fetchColumn(), true) ?: []);
+            $baseline = self::operations(json_decode($this->storage->openapiJson((int) $latest['id']), true) ?: []);
         }
         $changed = 0;
         foreach (array_intersect_key($current, $baseline) as $key => $operation) {
@@ -276,7 +257,9 @@ final class VersionService
      */
     private function latest(): ?array
     {
-        $stmt = $this->pdo->query('SELECT id, label, source_hash FROM versions WHERE source_hash IS NOT NULL ORDER BY id DESC LIMIT 1');
-        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+        foreach (array_reverse($this->storage->versions()) as $row) {
+            if (($row['source_hash'] ?? null) !== null) return ['id' => (int) $row['id'], 'label' => $row['label'], 'source_hash' => $row['source_hash']];
+        }
+        return null;
     }
 }

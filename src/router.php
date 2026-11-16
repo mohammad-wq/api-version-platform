@@ -7,12 +7,7 @@ use Mohammad\ApiVersionPlatform\LocalApi;
 use Mohammad\ApiVersionPlatform\Storage;
 use Mohammad\ApiVersionPlatform\VersionService;
 
-require_once __DIR__ . '/Config.php';
-require_once __DIR__ . '/SourceHasher.php';
-require_once __DIR__ . '/Storage.php';
-require_once __DIR__ . '/VersionNumber.php';
-require_once __DIR__ . '/VersionService.php';
-require_once __DIR__ . '/LocalApi.php';
+require_once __DIR__ . '/autoload.php';
 
 // Errors go to the server log, never into a response body where they would break the JSON the UI reads.
 ini_set('display_errors', '0');
@@ -21,7 +16,7 @@ ini_set('log_errors', '1');
 $uiDir = realpath(__DIR__ . '/../resources/ui');
 $path = rawurldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/');
 
-/** @return array{0: VersionService, 1: Storage, 2: string, 3: string} service, storage, project root, README path */
+/** @return array{0: VersionService, 1: Storage, 2: string, 3: string, 4: string} service, storage, project root, README path, cloud URL */
 function avpServices(): array
 {
     $configFile = getenv(Config::FILE_ENV) ?: null;
@@ -32,7 +27,7 @@ function avpServices(): array
     $root = $configFile ? dirname($configFile) : (getenv(Config::ROOT_ENV) ?: getcwd());
     $paths = Config::paths($config, $root);
     $storage = new Storage($paths['storage']);
-    return [new VersionService($paths['readme'], $storage), $storage, $root, $paths['readme']];
+    return [new VersionService($paths['readme'], $storage), $storage, $root, $paths['readme'], (string) $config['cloud']['url']];
 }
 
 /** The API is unauthenticated, so only same-machine pages may call it. */
@@ -54,8 +49,8 @@ function avpGuard(): void
 if (str_starts_with($path, '/api/')) {
     try {
         avpGuard();
-        [$service, $storage, $root, $readme] = avpServices();
-        (new LocalApi($service, $storage, $root, $readme))->handle(substr($path, 4), $_SERVER['REQUEST_METHOD']);
+        [$service, $storage, $root, $readme, $cloudUrl] = avpServices();
+        (new LocalApi($service, $storage, $root, $readme, $cloudUrl))->handle(substr($path, 4), $_SERVER['REQUEST_METHOD']);
         LocalApi::send(404, 'Not Found');
     } catch (InvalidArgumentException $e) {
         LocalApi::send(400, $e->getMessage());

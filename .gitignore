@@ -10,3 +10,4 @@
 /client/.env.*
 !/client/.env.package
 /client/*.sql
+.htaccess

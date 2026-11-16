@@ -6,10 +6,7 @@
     "keywords": ["openapi", "api", "versioning", "swagger", "ui"],
     "require": {
         "php": ">=8.1",
-        "ext-pdo": "*",
-        "ext-pdo_sqlite": "*",
-        "ext-json": "*",
-        "composer-runtime-api": "^2.2"
+        "ext-json": "*"
     },
     "autoload": {
         "psr-4": {
@@ -23,7 +20,10 @@
     "scripts": {
         "sync": "@php scripts/sync.php",
         "lint": "@php scripts/lint.php",
-        "test": "@php tests/parser_test.php"
+        "test": [
+            "@php tests/parser_test.php",
+            "@php tests/storage_test.php"
+        ]
     },
     "config": {
         "sort-packages": true

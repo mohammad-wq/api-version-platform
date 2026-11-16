@@ -13,12 +13,7 @@ if ($autoload !== null && is_file($autoload)) {
     require $autoload;
     $projectRoot = dirname(realpath($autoload), 2);
 } else {
-    require __DIR__ . '/../src/Config.php';
-    require __DIR__ . '/../src/Server.php';
-    require __DIR__ . '/../src/SourceHasher.php';
-    require __DIR__ . '/../src/Storage.php';
-    require __DIR__ . '/../src/VersionNumber.php';
-    require __DIR__ . '/../src/VersionService.php';
+    require __DIR__ . '/../src/autoload.php';
     $projectRoot = getcwd();
 }
 
@@ -26,22 +21,28 @@ $usage = <<<'TXT'
 Local API Version Platform
 
 Usage:
-  avp init [--force]                 set up the project (config, .avp/, API.md from the template)
+  avp init [--force] [--readme=PATH] set up the project (config, .avp/, API.md from the template);
+                                     --readme pins the API document instead of auto-detecting it
   avp serve [--port=8080] [--host=127.0.0.1] [--open]
-  avp status [--readme=PATH] [--json]
-  avp version create <label> [--note=TEXT] [--readme=PATH] [--allow-unchanged]
+  avp status [--readme=PATH] [--json] [--ci]
+  avp version create <label> [--note=TEXT] [--readme=PATH] [--allow-unchanged] [--ci]
   avp version list [--json]
   avp version show <label> [--format=json|openapi|markdown]
+  avp check [--readme=PATH] [--json] [--ci]  list what the parser warns about (exit 1 with --ci if anything)
+  avp migrate [--readme=PATH] [--write]  add the strict-format header to an older document
   avp template [--output=PATH] [--force]
   avp --version
 
+--ci makes status and version create fail (exit 1) when the document has parser warnings
+(the LEGACY_FORMAT notice is ignored: see `avp migrate`).
+--i-know-what-i-am-doing allows `serve` on a non-loopback host (the tool has no authentication).
 Running `avp` with no command starts the server. Every command accepts --config=PATH.
 Options take a value as --name=value or --name value.
 
 TXT;
 
 const AVP_VALUE_OPTIONS = ['note', 'readme', 'output', 'format', 'host', 'port', 'config'];
-const AVP_FLAG_OPTIONS = ['force', 'json', 'allow-unchanged', 'help', 'open', 'version'];
+const AVP_FLAG_OPTIONS = ['force', 'json', 'allow-unchanged', 'help', 'open', 'version', 'ci', 'i-know-what-i-am-doing', 'write'];
 
 function avpFail(string $message, int $code = 1): never
 {
@@ -88,10 +89,25 @@ function avpJson(mixed $value): void
     fwrite(STDOUT, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) . PHP_EOL);
 }
 
+/** Warnings that fail --ci: everything except the notice that the document has no strict-format header. */
+function avpCiWarnings(array $warnings): array
+{
+    return array_values(array_filter($warnings, static fn (array $w): bool => ($w['code'] ?? '') !== 'LEGACY_FORMAT'));
+}
+
+/** @param list<array<string, mixed>> $warnings */
+function avpWarnings(array $warnings): void
+{
+    foreach ($warnings as $warning) {
+        $lines = isset($warning['lines']) ? ' (line ' . implode(', ', (array) $warning['lines']) . ')' : '';
+        fwrite(STDERR, 'warning: ' . ($warning['message'] ?? $warning['code'] ?? 'unknown') . $lines . PHP_EOL);
+    }
+}
+
 try {
     $command = $positionals[0] ?? 'serve';
     if ($command === 'init') {
-        $result = Server::init($projectRoot, isset($options['force']));
+        $result = Server::init($projectRoot, isset($options['force']), isset($options['readme']) ? (string) $options['readme'] : null);
         $document = $result['document'];
         fwrite(STDOUT, "Created {$result['config']}\n");
         fwrite(STDOUT, "Local state goes in {$result['state']} (ignored by git automatically)\n");
@@ -113,7 +129,7 @@ try {
         if (@file_put_contents($target, $template) === false) throw new RuntimeException("Could not write {$target}.");
         fwrite(STDOUT, "Wrote {$target}\n"); exit(0);
     }
-    if (!in_array($command, ['status', 'version', 'serve'], true)) {
+    if (!in_array($command, ['status', 'version', 'serve', 'check', 'migrate'], true)) {
         fwrite(STDERR, "Unknown command \"{$command}\".\n\n{$usage}"); exit(1);
     }
 
@@ -127,7 +143,12 @@ try {
         $host = (string) ($options['host'] ?? $config['server']['host']);
         $port = Config::port($options['port'] ?? $config['server']['port']);
         if ($port === null) avpFail('--port must be a whole number from 1 to 65535.');
-        if (!in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) fwrite(STDERR, "Warning: this unauthenticated tool should not be exposed to an untrusted network.\n");
+        if (!in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
+            if (!isset($options['i-know-what-i-am-doing'])) {
+                avpFail("Refusing to listen on {$host}: this tool has no authentication and its API tester can reach any URL the machine can. Use the default 127.0.0.1, or add --i-know-what-i-am-doing if the network is trusted.");
+            }
+            fwrite(STDERR, "Warning: listening on {$host} without authentication. Anyone who can reach this port can use the API tester from your machine.\n");
+        }
         $findFreePort = !isset($options['port']) && !$config['server']['port_explicit'];
         exit(Server::run($host, $port, $configFile, $configRoot, $findFreePort, isset($options['open'])));
     }
@@ -138,13 +159,45 @@ try {
 
     if ($command === 'status') {
         $status = $service->status();
+        if (isset($options['ci']) && avpCiWarnings($status['warnings'] ?? []) !== []) {
+            avpWarnings(avpCiWarnings($status['warnings']));
+            fwrite(STDERR, "Failing because --ci was given and the document has parser warnings.\n");
+            exit(1);
+        }
         if (isset($options['json'])) avpJson($status); else fwrite(STDOUT, strtoupper($status['state']) . ': ' . ($status['message'] ?? $readme) . PHP_EOL);
         exit($status['state'] === 'modified' ? 2 : ($status['state'] === 'clean' || $status['state'] === 'uninitialized' ? 0 : 1));
+    }
+
+    if ($command === 'check' || $command === 'migrate') {
+        $text = is_file($readme) ? file_get_contents($readme) : false;
+        if ($text === false) throw new RuntimeException("No API document found at {$readme}. Run `avp init` to create one from the template.");
+        if ($command === 'check') {
+            $result = \Mohammad\ApiVersionPlatform\Parser\Validator::check($text);
+            $all = array_merge($result['errors'], $result['warnings']);
+            $reportable = avpCiWarnings($all);
+            if (isset($options['json'])) { avpJson($result); exit(isset($options['ci']) && $reportable !== [] ? 1 : 0); }
+            avpWarnings($all);
+            fwrite(STDOUT, "{$readme}: " . ($result['strict'] ? 'strict format' : 'legacy format (run `avp migrate`)') . ', ' . $result['statistics']['endpoints'] . ' endpoints, ' . count($all) . " warnings
+");
+            exit(isset($options['ci']) && $reportable !== [] ? 1 : 0);
+        }
+        $migrated = \Mohammad\ApiVersionPlatform\Parser\Migrator::migrate($text);
+        if ($migrated === $text) { fwrite(STDOUT, "{$readme} already uses the strict format.\n"); exit(0); }
+        if (!isset($options['write'])) { fwrite(STDOUT, $migrated); fwrite(STDERR, "(dry run: add --write to update {$readme})\n"); exit(0); }
+        if (@file_put_contents($readme, $migrated) === false) throw new RuntimeException("Could not write {$readme}.");
+        fwrite(STDOUT, "Added the strict-format header to {$readme}. Run `avp check` to validate it.\n"); exit(0);
     }
 
     $sub = $positionals[1] ?? '';
     if ($sub === 'create') {
         $label = VersionService::label((string) ($positionals[2] ?? ''));
+        if (isset($options['ci'])) {
+            $warnings = avpCiWarnings($service->status()['warnings'] ?? []);
+            if ($warnings !== []) {
+                avpWarnings($warnings);
+                avpFail('No version created: --ci was given and the document has parser warnings.');
+            }
+        }
         // Detect the duplicate before the INSERT so the CLI speaks the same message the API answers with.
         if ($service->get($label) !== null) throw new RuntimeException("A version with label {$label} already exists.");
         $result = $service->create($label, (string) ($options['note'] ?? ''), isset($options['allow-unchanged']));
@@ -183,8 +236,5 @@ try {
     }
     fwrite(STDERR, ($sub === '' ? "Missing subcommand for `version`." : "Unknown subcommand \"version {$sub}\".") . "\n\n{$usage}"); exit(1);
 } catch (Throwable $e) {
-    if ($e instanceof \PDOException && $e->getCode() === '23000') {
-        $e = new RuntimeException('A version with this label already exists.');
-    }
     fwrite(STDERR, $e->getMessage() . PHP_EOL); exit(1);
 }

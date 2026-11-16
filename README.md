@@ -1,6 +1,6 @@
 # mohammad-wq/api-version-platform
 
-Version your API documentation locally. Write your API in a Markdown file using the bundled template; the platform turns it into OpenAPI 3.0, keeps every version in a local SQLite database, and gives you the full API Version Platform web UI (version history, diffs, OpenAPI viewer and an API tester) on `localhost`.
+Version your API documentation locally. Write your API in a Markdown file using the bundled template; the platform turns it into OpenAPI 3.0, keeps every version in plain JSON files in `.avp/`, and gives you the full API Version Platform web UI (version history, diffs, OpenAPI viewer and an API tester) on `localhost`.
 
 No Node.js, MySQL, accounts, web server or configuration is needed.
 
@@ -8,8 +8,8 @@ No Node.js, MySQL, accounts, web server or configuration is needed.
 
 ## Requirements
 
-- PHP 8.1+ with `pdo_sqlite` (enabled in most PHP builds)
-- `openssl`, only to test HTTPS APIs from the Test APIs tab
+- PHP 8.1+ (the `json` extension is built in). No database extension and no Composer dependencies.
+- `openssl`, only to test HTTPS APIs from the Test APIs tab or to publish to the HTTPS cloud
 
 ## Quick start
 
@@ -22,7 +22,7 @@ vendor/bin/avp serve    # open the URL it prints
 That's it. `init` creates:
 
 - `avp.config.php`: optional settings, already filled in with working defaults.
-- `.avp/`: the local version database. It contains its own `.gitignore`, so it never ends up in git and you don't need to edit yours.
+- `.avp/`: the local state: `versions.json` plus one JSON file per version, and the request history. Versions from an older release (`.avp/storage.sqlite`) are imported once, automatically, when PHP has `pdo_sqlite`. It contains its own `.gitignore`, so it never ends up in git and you don't need to edit yours.
 - `API.md`: the template, written only when your project has no API document yet. Replace the example endpoints with your own. If your `README.md` (or `API.md`, `docs/API.md`) already documents endpoints, it is used instead and nothing is written.
 
 `init` is optional: every command also works with no setup at all.
@@ -66,12 +66,14 @@ Put `--` after `avp` whenever the command has options (anything starting with `-
 ## CLI
 
 ```text
-avp init [--force]
+avp init [--force] [--readme=PATH]
 avp serve [--port=8080] [--host=127.0.0.1] [--open]
-avp status [--readme=PATH] [--json]
-avp version create <label> [--note=TEXT] [--readme=PATH] [--allow-unchanged]
+avp status [--readme=PATH] [--json] [--ci]
+avp version create <label> [--note=TEXT] [--readme=PATH] [--allow-unchanged] [--ci]
 avp version list [--json]
 avp version show <label> [--format=json|openapi|markdown]
+avp check [--readme=PATH] [--json]
+avp migrate [--readme=PATH] [--write]
 avp template [--output=PATH] [--force]
 avp --version
 ```
@@ -80,6 +82,11 @@ avp --version
 - Options take their value either way: `--note="Text"` or `--note "Text"`. Unknown options are reported, not ignored.
 - Every command accepts `--config=PATH`. `avp-serve` is kept as an alias of `avp`.
 - `serve` uses port 8080. If that port is busy it moves to the next free one and tells you, unless you chose the port with `--port`, `AVP_PORT` or the config file. `--open` opens the UI in your browser.
+- `init --readme=PATH` pins a specific API document in `avp.config.php` (useful when both `README.md` and `API.md` contain endpoints) and does not write `API.md`.
+- `check` lists what the parser warns about, without saving anything. `migrate` adds the strict-format header to an older document (a dry run unless `--write` is given).
+- A document with an `avp: 1` header is parsed strictly: structural problems (unknown header keys, duplicate endpoints, bad rows, ...) are reported as warnings with line numbers. They never stop you from saving a version. Documents without the header still work but get a `LEGACY_FORMAT` notice. See [docs/FORMAT.md](docs/FORMAT.md).
+- `--ci` makes `status` and `version create` exit 1 when the document has parser warnings.
+- `serve` refuses a non-loopback `--host` (such as `0.0.0.0`) unless you also pass `--i-know-what-i-am-doing`: the tool has no authentication and its API tester can reach any URL the machine can.
 - Version labels are 1–50 characters, the same in the CLI and the web UI.
 
 `avp status` works like `git status` for your API document:
@@ -106,12 +113,23 @@ Line-ending (CRLF/LF) and UTF-8 BOM differences do not count as changes. A docum
 
 - **README banner**: when your API document changes, the UI shows what changed (endpoints added, removed or changed) and saves it as a new version in one click. The suggested version number is prefilled but editable.
 - **Versions**: upload or paste README Markdown or OpenAPI JSON, review it, and save it as a version; view, edit, compare and delete versions.
-- **Test APIs**: send requests to your API using environments (base URLs) you define. Requests are sent by the local PHP server, so CORS does not apply.
-- **History**: requests sent from the tester, stored locally.
+- **Test APIs**: send requests to your API using environments (base URLs) you define. Requests are sent by the local PHP server, so CORS does not apply. Redirects are followed (at most 5), but a public host cannot redirect a request to a loopback or private address.
+- **Cloud**: sign in to the hosted platform, publish versions to a cloud project and import cloud versions (see below).
+- **History**: requests sent from the tester, stored locally, with a Clear button.
 
-Accounts, collaborators and share links belong to the hosted platform and are not part of the package.
+There is no sign-in, user or collaborator screen: the package is a single-user local tool.
 
 Versions created from the API document (CLI or banner) store the exact Markdown source and move the `avp status` baseline. Versions imported or edited in the UI store OpenAPI only and do not change `avp status`.
+
+## Publishing to the cloud
+
+The **Cloud** tab connects the local project to the hosted platform (by default `https://qa.erpsite.org.pk/test_avp/`; change it in the sign-in form, `cloud.url` in `avp.config.php` or `AVP_CLOUD_URL`):
+
+1. Sign in with your account on the hosted platform. The sign-in token is kept in `.avp/cloud.json` (readable only by you, never sent to the browser) and removed by **Sign out** or when the cloud rejects it.
+2. **Publish a version**: pick a local version and a cloud project (or create one). The version's OpenAPI document is sent as a new cloud version; publishing a name that already exists in that project is refused by the cloud.
+3. **Your cloud projects**: browse the projects you can access and their versions, and **Import** one as a local version.
+
+The local server makes these calls, so cloud CORS settings do not matter. Accounts are created on the hosted platform; the package only signs in.
 
 ## Configuration
 
@@ -121,7 +139,7 @@ Nothing needs configuring. `avp.config.php` (created by `avp init`, see `config/
 return [
     'paths' => [
         'readme' => null,                     // null = auto-detect; or e.g. 'docs/my-api.md'
-        'storage' => '.avp/storage.sqlite',
+        'storage' => '.avp',                  // state folder (JSON files)
     ],
     'server' => [
         'host' => '127.0.0.1',
@@ -130,21 +148,24 @@ return [
 ];
 ```
 
-With `readme` set to `null` (or with no config file), the first of `README.md`, `API.md`, `docs/API.md` and `docs/README.md` that contains endpoints is used. Relative paths are resolved from the config file's folder, or from the project root when there is no config file. Environment variables override the file: `AVP_README_PATH`, `AVP_STORAGE_PATH`, `AVP_HOST`, `AVP_PORT`.
+With `readme` set to `null` (or with no config file), the first of `README.md`, `API.md`, `docs/API.md` and `docs/README.md` that contains endpoints is used. Relative paths are resolved from the config file's folder, or from the project root when there is no config file. Environment variables override the file: `AVP_README_PATH`, `AVP_STORAGE_PATH`, `AVP_HOST`, `AVP_PORT`, `AVP_CLOUD_URL`.
 
 ## How it works
 
 ```
-bin/avp               CLI: init / serve / status / version / template
+bin/avp               CLI: init / serve / status / check / migrate / version / template
 src/Config.php        defaults, avp.config.php, AVP_* env vars, API document auto-detection
 src/router.php        /api/* -> local API, static UI files, everything else -> index.html
 src/LocalApi.php      the web client's API routes for one local user and project
 src/VersionService.php  README status, version create/import/edit/delete
-src/Storage.php       SQLite schema and migrations
-src/MarkdownOpenApiParser.php  README Markdown -> OpenAPI 3.0.3
+src/Storage.php       JSON-file store: versions, request history, project metadata (atomic writes, file lock)
+src/Cloud.php         client for the hosted platform: sign in, projects, publish and import versions
+src/MarkdownOpenApiParser.php  facade: README Markdown -> OpenAPI 3.0.3
+src/Parser/           FrontMatter, Lexer, Resolver, OpenApiBuilder, DocumentParser, Validator, Migrator
+src/autoload.php      PSR-4 loader used when Composer's autoloader is not present
 resources/ui/         pre-built web client (generated, committed)
 resources/templates/  README template served by `avp template`, `avp init` and the UI
-client/               React source shared with the hosted web app (not in Composer archives)
+client/               React source of the UI (included in Composer archives, so the bundle can be audited and rebuilt)
 ```
 
 ## Updating the bundled UI (maintainers)
@@ -162,27 +183,13 @@ php scripts/lint.php
 composer test
 ```
 
-`npm run build` (the hosted web build) is unaffected. Then commit, tag a new version (`git tag v1.2.0 && git push --tags`) and consumers run `composer update`. The version comes from the tag; `composer.json` has no `version` field, so there is nothing else to bump.
+`npm run build` (the hosted web build) is unaffected.
+
+**Hosted web version.** The multi-user backend (`php_backend`) uses the same parser. After changing `src/Parser/` or `src/MarkdownOpenApiParser.php`, copy it over with `php scripts/sync-hosted.php --backend=PATH/TO/php_backend`; this writes `includes/parser/` and `includes/markdownOpenApiParser.php` (which keeps the global `MarkdownOpenApiParser` class the hosted endpoints call). The parser code runs on PHP 8.0+. The hosted client's `src/templates/API_README_TEMPLATE.md` and `test-fixtures/API_README_TEMPLATE.openapi.json` are copies of this package's, so refresh them too. Then commit, tag a new version (`git tag v1.2.0 && git push --tags`) and consumers run `composer update`. The version comes from the tag; `composer.json` has no `version` field, so there is nothing else to bump.
 
 ## Changelog
 
-### 1.1.1
-
-- Fix: the web UI showed a blank page (`usePersistentState is not defined`) on the Versions tab, which opens by default. The bundled UI is rebuilt. This also affected 1.0.5 and 1.1.0.
-- Docs: the Composer shortcut now disables Composer's 300-second script timeout, which otherwise stopped `composer avp serve` after five minutes.
-
-### 1.1.0
-
-- **Zero setup**: no config file is needed. The API document is auto-detected (`README.md`, `API.md`, `docs/API.md`, `docs/README.md`). `avp init` also writes `API.md` from the template when the project has none, and `.avp/` ignores itself in git.
-- `avp serve` moves to the next free port when 8080 is busy, prints the URL only once the server answers, and adds `--open`.
-- The CLI and the web server always read the same files, including when `serve` runs from a subfolder without a config file.
-- Options accept `--name value` as well as `--name=value`. Unknown options, missing values and invalid `--format`/`--port` values are reported instead of ignored. Adds `avp --version`.
-- Non-UTF-8 (Windows-1252) API documents can be versioned, with a `NOT_UTF8` warning.
-- The local API rejects malformed request fields with `400` instead of returning PHP warnings in the JSON, and never prints PHP errors into responses.
-- Version labels are limited to 50 characters everywhere (CLI, banner, import).
-- Clear errors for invalid config values (wrong types, ports outside 1–65535) and unreadable databases. Concurrent writers wait for the database lock instead of failing.
-- The parser warns about `.`/`..` path segments (`DOT_SEGMENT_PATH`).
-- Composer archives no longer ship `tests/`, which needed fixtures that aren't in the archive.
+See [CHANGELOG.md](CHANGELOG.md). The package is in beta: the parser and the local API may still change between minor versions.
 
 ## License
 

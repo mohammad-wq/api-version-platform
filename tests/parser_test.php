@@ -25,7 +25,16 @@ set_error_handler(static function (int $severity, string $message, string $file,
 });
 
 $root = dirname(__DIR__);
-require_once "{$root}/src/MarkdownOpenApiParser.php";
+require_once "{$root}/src/autoload.php";
+
+use Mohammad\ApiVersionPlatform\MarkdownOpenApiParser;
+use Mohammad\ApiVersionPlatform\Parser\Diagnostics;
+use Mohammad\ApiVersionPlatform\Parser\FrontMatter;
+use Mohammad\ApiVersionPlatform\Parser\Lexer;
+use Mohammad\ApiVersionPlatform\Parser\Migrator;
+use Mohammad\ApiVersionPlatform\Parser\OpenApiBuilder;
+use Mohammad\ApiVersionPlatform\Parser\Resolver;
+use Mohammad\ApiVersionPlatform\Parser\Validator;
 
 $failures = 0;
 $checks = 0;
@@ -161,9 +170,10 @@ if (is_file($fixtureBinary)) {
 
 // ---------------------------------------------------------------- servers + environments (was JS-only)
 
+/** The strict-aware result (errors listed separately); MarkdownOpenApiParser::parse folds them into warnings. */
 function parse(string $markdown)
 {
-    return MarkdownOpenApiParser::parse($markdown);
+    return Mohammad\ApiVersionPlatform\Parser\DocumentParser::parse($markdown);
 }
 
 $serversDoc = parse("# Ticket API\n\nServers: `http://api.example.com/backend/`\n\nEnvironments: Production=https://api.prod.com|login=/auth/login.php|token=data.token|method=POST; Staging=https://api.staging.com/v2\n\n## Accounts\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `fetch/getAccounts.php` | List accounts |\n");
@@ -254,13 +264,13 @@ $dupDoc = parse("# API\n\n## Users\n\n| method | endpoint | description |\n| ---
 check(in_array('DUPLICATE_ENDPOINT', array_column($dupDoc['warnings'], 'code'), true), 'Duplicate method+path rows emit a DUPLICATE_ENDPOINT warning instead of silently overwriting.');
 
 $cleanDoc = parse("# API\n\n## Users\n\n| method | endpoint | description |\n| --- | --- | --- |\n| GET | /u/getUsers.php | a |\n| POST | /u/makeUser.php | b |\n");
-check(count(array_column($cleanDoc['warnings'], 'code')) === 0, 'A clean document raises no warnings (no false positives).');
+check(codesOf($cleanDoc) === [], 'A clean document raises no warnings (no false positives).');
 
 $unknownColumnDoc = parse("# API\n\n## Users\n\n| Method | Endpoint | Responses | Description |\n|---|---|---|---|\n| GET | /u/getUsers.php | `404`: nope | list |\n");
 check(in_array('UNRECOGNIZED_COLUMN', array_column($unknownColumnDoc['warnings'], 'code'), true), 'Cells in unrecognized columns emit an UNRECOGNIZED_COLUMN warning instead of being silently dropped.');
 
 $synonymDoc = parse("# API\n\n## Users\n\n| HTTP Verb | API Route | Permissions | Authentication | Description |\n|---|---|---|---|---|\n| GET | /u/getUsers.php | `users:view` | true | list |\n");
-check(count($synonymDoc['warnings']) === 0, 'Header synonyms (HTTP Verb, API Route, Permissions, Authentication) parse without warnings.');
+check(codesOf($synonymDoc) === [], 'Header synonyms (HTTP Verb, API Route, Permissions, Authentication) parse without warnings.');
 $synonymOp = operationsOfDoc($synonymDoc['openapi'])[0][2] ?? null;
 check($synonymOp !== null && in_array('users:view', $synonymOp['x-permissions'] ?? [], true), 'Permissions from a synonym-named column land in x-permissions.');
 
@@ -301,7 +311,7 @@ $typed = documentedOperation(customersTable('`customers:add`', 'Save', '`modify/
 check(($typed['requestBody']['content']['application/json']['schema'] ?? null) === ['type' => 'object', 'properties' => ['id' => ['type' => 'integer'], 'tags' => ['type' => 'array', 'items' => ['type' => 'string']], 'note' => ['type' => 'string']], 'required' => ['id', 'tags']], 'Typed shorthand `{id: integer, tags: string[], note?}` is typed, not split into words.');
 
 $unquotedServer = parse("# API\n\nServers: https://api.example.com/v1/\n\n## Users\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `/u/list.php` | List |\n");
-check(($unquotedServer['openapi']['servers'] ?? []) === [['url' => 'https://api.example.com/v1']] && $unquotedServer['warnings'] === [], 'A Servers: URL without backticks is accepted.');
+check(($unquotedServer['openapi']['servers'] ?? []) === [['url' => 'https://api.example.com/v1']] && codesOf($unquotedServer) === [], 'A Servers: URL without backticks is accepted.');
 
 $namedNote = customersTable('`customers:view`', 'List', '`fetch/list.php`', 'GET', "| POST | `modify/save.php` | `customers:add` | true | Save |\n\nSaving through `save.php` is idempotent.\n");
 check((documentedOperation($namedNote, '/customers/fetch/list.php', 'get')['description'] ?? null) === 'List', 'A note under a table that names `save.php` is not added to other endpoints.');
@@ -309,6 +319,224 @@ check((documentedOperation($namedNote, '/customers/modify/save.php')['descriptio
 
 $dupField = ("# API\n\n## Docs\n\n| Method | Endpoint | Description |\n|---|---|---|\n| POST | `/d/upload.php` | Upload with `multipart/form-data`: `a`, `b?`, file field `upload` and `a` |\n");
 check((documentedOperation($dupField, '/d/upload.php')['requestBody']['content']['multipart/form-data']['schema']['required'] ?? null) === ['a', 'upload'], 'A multipart field named twice is listed once in required (duplicates make the OpenAPI invalid).');
+
+// ================================================================ split parser: Lexer
+
+/** Warning codes of a parse result, without the LEGACY_FORMAT hint every header-less document gets. */
+function codesOf(array $doc): array
+{
+    return array_values(array_filter(array_column($doc['warnings'], 'code'), static fn (string $code): bool => $code !== 'LEGACY_FORMAT'));
+}
+
+/** A strict document: the front-matter header plus $body. */
+function strictDoc(string $body, string $header = "---\navp: 1\ntitle: Test API\n---\n"): string
+{
+    return $header . $body;
+}
+
+function errorCodes(array $doc): array
+{
+    return array_column($doc['errors'], 'code');
+}
+
+const USERS_TABLE = "\n## Users — `users/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | List users |\n";
+
+$split = Lexer::split("\xEF\xBB\xBF# Title\r\nline two\rline three\n");
+check($split['lines'] === ['# Title', 'line two', 'line three', ''] && $split['notUtf8'] === false, 'Lexer::split drops a BOM and splits CRLF, CR and LF line endings.');
+$split = Lexer::split("caf\xE9 \x80");
+check($split['notUtf8'] === true && preg_match('//u', implode("\n", $split['lines'])) === 1 && str_contains($split['lines'][0], 'café'), 'Lexer::split reads non-UTF-8 text as Windows-1252 and reports it.');
+
+$hidden = Lexer::hideHtmlComments(['keep <!-- one --> this', '<!-- start', 'hidden line', 'end --> tail', 'a <!-- b', '--> c']);
+check($hidden === ['keep  this', '', '', ' tail', 'a ', ' c'], 'Lexer::hideHtmlComments hides inline and multi-line comments but keeps the line count.');
+
+$blocks = Lexer::readBlocks(Lexer::hideHtmlComments(explode("\n", "# Title\n\nSome text\nmore text\n\n---\n\n| A | B |\n|---|---|\n| 1 | a\\|b |\n\n```json\n{\"x\":1}\n```\n\n## Next")));
+check(array_column($blocks, 'kind') === ['heading', 'paragraph', 'table', 'fence', 'heading'], 'Lexer::readBlocks finds headings, paragraphs, tables and fences, and skips horizontal rules.');
+check($blocks[1]['text'] === "Some text\nmore text" && $blocks[1]['lines'] === [3, 4], 'A paragraph keeps its text and 1-based line range.');
+check($blocks[2]['header'] === ['A', 'B'] && $blocks[2]['rows'][0]['cells'] === ['1', 'a|b'] && $blocks[2]['rows'][0]['line'] === 10, 'A table block has its header, rows (escaped pipes kept) and row line numbers.');
+check($blocks[3]['lang'] === 'json' && $blocks[3]['text'] === '{"x":1}', 'A fenced block keeps its language and text.');
+check(Lexer::splitTableRow('| a | `b|c` \\| d |') === ['a', '`b', 'c` | d'], 'Lexer::splitTableRow splits on unescaped pipes only.');
+
+$lexed = Lexer::lex(explode("\n", "# My API\n\nThe intro paragraph.\n\n## Users — `users/`\n\nBase path: `v2/people`\n\n### Detail\n\n## Plain\n"));
+check($lexed['title'] === 'My API' && $lexed['description'] === 'The intro paragraph.', 'Lexer::lex reports the title (first H1) and the description (first paragraph under it).');
+$byTitle = array_column($lexed['sections'], null, 'title');
+check($byTitle['Users']['prefix'] === 'v2/people' && $byTitle['Detail']['prefix'] === 'v2/people' && $byTitle['Plain']['prefix'] === null, 'Section prefixes come from "Base path:" and are inherited by child headings.');
+check(Lexer::cleanTitle('Users — `users/` (v2)') === 'Users' && Lexer::cleanTitle('**Bold** `x`') === 'Bold', 'Lexer::cleanTitle drops the prefix span and inline markup.');
+check(Lexer::prefixFromHeading('Users — `users/`') === 'users' && Lexer::prefixFromHeading('POST `a.php`') === null && Lexer::prefixFromHeading('X — `a/b/`, `a/c/`') === 'a', 'Lexer::prefixFromHeading takes the prefix span, ignores method headings and uses the common prefix.');
+check(Lexer::stripInline('**a** _b_ `**c**`') === 'a b **c**' && Lexer::codeSpans('x `a` y `b`') === ['a', 'b'] && Lexer::firstSentence('One. Two.') === 'One.', 'Lexer text helpers: stripInline keeps code spans, codeSpans, firstSentence.');
+check(Lexer::cleanDescription("List. Auth: true\n---\nmore") === 'List. more', 'Lexer::cleanDescription removes Auth markers and horizontal rules.');
+
+// ================================================================ split parser: Resolver + OpenApiBuilder
+
+$diagnostics = new Diagnostics(false);
+$resolver = new Resolver($diagnostics);
+$resolver->resolve(Lexer::lex(explode("\n", "# API\n\n```json\n{\"statusCode\":200,\"data\":{}}\n```\n\nEvery endpoint except `auth/login.php` requires a token.\n\nServers: https://x.example.com/\n\n## Auth — `auth/`\n\n| Method | Endpoint | Permission | Description |\n|---|---|---|---|\n| POST | `login.php` — `{user, pass}` | | Sign in |\n| GET | `me.php?id=1` | `users:view` | Who am I. Errors: `404` no such user |\n"))['sections']);
+check(count($resolver->endpoints) === 2 && $resolver->endpoints[0]['method'] === 'POST' && $resolver->endpoints[0]['path'] === '/auth/login.php', 'Resolver collects endpoints with the prefix applied.');
+check($resolver->endpoints[0]['public'] === true && $resolver->endpoints[1]['public'] === false, 'Resolver marks "Every endpoint except `x`" targets public.');
+check($resolver->endpoints[1]['permission'] === ['users:view'] && $resolver->endpoints[1]['request']['parameters'][0]['name'] === 'id', 'Resolver reads permissions and query parameters.');
+check(isset($resolver->endpoints[1]['responses'][404]) && $resolver->responseEnvelope !== null && $resolver->servers === [['url' => 'https://x.example.com']], 'Resolver reads error statuses, the response envelope and servers.');
+check($resolver->endpoints[0]['request']['body']['schema']['required'] === ['user', 'pass'], 'Resolver turns `{user, pass}` into a JSON body schema.');
+check(Resolver::normalizeServerUrl('https://a.com/x/') === 'https://a.com/x' && Resolver::normalizeServerUrl('ftp://a.com') === null && Resolver::normalizeServerUrl('https://u:p@a.com?q=1') === null, 'Resolver::normalizeServerUrl accepts only clean HTTP(S) URLs.');
+
+$schema = OpenApiBuilder::inferSchema(['email' => 'a@b.c', 'n' => 3, 'tags' => ['x'], 'ok' => true, 'none' => null], ['email' => 'valid email format', 'n' => 'minimum 3 characters']);
+check($schema['properties']->email === ['type' => 'string', 'description' => 'valid email format', 'format' => 'email'] && $schema['properties']->n === ['type' => 'integer', 'description' => 'minimum 3 characters'] && $schema['properties']->none === ['type' => 'string', 'nullable' => true], 'OpenApiBuilder::inferSchema infers types and applies // comments.');
+check(OpenApiBuilder::decodeJsonExample("{\n \"a\": 1, // note\n \"b\": [1, 2,],\n}") === ['a' => 1, 'b' => [1, 2]], 'OpenApiBuilder::decodeJsonExample accepts // comments and trailing commas.');
+check(OpenApiBuilder::decodeJsonExample('{ nope') === null && OpenApiBuilder::decodeJsonExample('{}') instanceof \stdClass, 'OpenApiBuilder::decodeJsonExample rejects invalid JSON and keeps `{}` as an object.');
+check(OpenApiBuilder::jsonComments("{\n \"a\": 1, // first\n \"u\": \"http://x\"\n}") === ['a' => 'first'], 'OpenApiBuilder::jsonComments ignores // inside strings.');
+check(OpenApiBuilder::shorthandSchema('{id: integer, tags: string[], note?}')['required'] === ['id', 'tags'], 'OpenApiBuilder::shorthandSchema reads typed shorthand with optional fields.');
+$used = [];
+check(OpenApiBuilder::operationId('GET', '/a/b.php', $used) === 'get_a_b_php' && OpenApiBuilder::operationId('GET', '/a/b.php', $used) === 'get_a_b_php_2' && OpenApiBuilder::operationId('GET', '/', $used) === 'get_root', 'OpenApiBuilder::operationId is unique per method+path and has a root fallback.');
+check(OpenApiBuilder::reasonPhrase(404) === 'Not Found' && OpenApiBuilder::reasonPhrase(503) === 'Server Error' && OpenApiBuilder::reasonPhrase(299) === 'Response', 'OpenApiBuilder::reasonPhrase covers common codes.');
+check(OpenApiBuilder::querySchema('YYYY-MM-DD') === ['type' => 'string', 'format' => 'date'] && OpenApiBuilder::querySchema('a|b')['enum'] === ['a', 'b'] && OpenApiBuilder::queryExample('7') === 7, 'OpenApiBuilder::querySchema / queryExample read query template values.');
+
+$built = (new OpenApiBuilder())->build(
+    [['method' => 'GET', 'path' => '/x/{id}', 'tag' => 'X', 'summary' => 'S', 'description' => 'D', 'permission' => [], 'public' => false, 'request' => ['parameters' => []], 'responses' => [], 'line' => 3]],
+    ['title' => 'T', 'description' => '', 'version' => '2.0.0', 'servers' => [['url' => 'https://s.example.com']], 'auth' => 'bearer'],
+    new Diagnostics(false),
+);
+$builtDoc = json_decode(json_encode($built['openapi']), true);
+check($builtDoc['info'] === ['title' => 'T', 'version' => '2.0.0'] && $builtDoc['servers'] === [['url' => 'https://s.example.com']] && isset($builtDoc['components']['securitySchemes']['BearerAuth']), 'OpenApiBuilder::build writes info, servers and the bearer scheme.');
+check($builtDoc['paths']['/x/{id}']['get']['parameters'][0]['in'] === 'path' && $builtDoc['paths']['/x/{id}']['get']['security'] === [['BearerAuth' => []]] && $built['methods'] === ['GET' => 1] && $built['tags'] === 1, 'OpenApiBuilder::build adds path parameters and security, and counts methods and tags.');
+$noAuth = (new OpenApiBuilder())->build([], ['title' => 'T', 'description' => '', 'version' => '1.0.0', 'servers' => [], 'auth' => 'none'], new Diagnostics(false));
+check(!isset($noAuth['openapi']['components']), 'OpenApiBuilder::build leaves out the security scheme for auth: none.');
+
+$lenient = new Diagnostics(false);
+$strictDiag = new Diagnostics(true);
+foreach ([$lenient, $strictDiag] as $d) {
+    $d->warn('DUPLICATE_ENDPOINT', 'dup', [3, 3], ['method' => 'GET', 'path' => '/a']);
+    $d->warn('INFERRED_PERMISSION', 'info', [1, 1]);
+}
+check(count($lenient->errors()) === 0 && count($lenient->warnings()) === 2, 'Diagnostics (lenient) keeps everything as warnings.');
+check(array_column($strictDiag->errors(), 'code') === ['DUPLICATE_ENDPOINT'] && array_column($strictDiag->warnings(), 'code') === ['INFERRED_PERMISSION'] && $strictDiag->errors()[0]['endpoint'] === 'GET /a', 'Diagnostics (strict) turns structural problems into errors and keeps advisory warnings.');
+
+// ================================================================ front-matter
+
+$fm = FrontMatter::extract(explode("\n", "---\navp: 1\ntitle: \"Quoted: title\"\nversion: 2.1.0 # trailing comment\n# a comment line\nauth: none\nservers:\n  - https://a.example.com\n  - 'https://b.example.com'\n---\n# Body"));
+check($fm['present'] && $fm['errors'] === [] && $fm['data']['title'] === 'Quoted: title' && $fm['data']['version'] === '2.1.0' && $fm['data']['auth'] === 'none', 'FrontMatter reads bare, quoted and commented values.');
+check($fm['data']['servers'] === ['https://a.example.com', 'https://b.example.com'], 'FrontMatter reads a `- item` list.');
+check(array_slice($fm['lines'], 0, 10) === array_fill(0, 10, '') && $fm['lines'][10] === '# Body' && count($fm['lines']) === 11, 'FrontMatter blanks the header lines so later line numbers do not move.');
+$inline = FrontMatter::extract(['---', 'avp: 1', 'title: T', 'servers: [https://a.example.com, https://b.example.com]', '---']);
+check($inline['errors'] === [] && $inline['data']['servers'] === ['https://a.example.com', 'https://b.example.com'], 'FrontMatter reads an inline list.');
+check(FrontMatter::extract(['---', '', '# Title', 'text'])['present'] === false && FrontMatter::extract(['# Title'])['present'] === false && FrontMatter::extract(['---', 'title: x', '---'])['present'] === false, 'Without an `avp:` key the top of the file is not a header (a leading rule stays a rule).');
+
+$cases = [
+    'unknown key' => ["---\navp: 1\ntitle: T\ncolour: red\n---\n", 'FRONT_MATTER_UNKNOWN_KEY'],
+    'duplicate key' => ["---\navp: 1\ntitle: T\ntitle: U\n---\n", 'FRONT_MATTER_DUPLICATE_KEY'],
+    'unsupported avp' => ["---\navp: 2\ntitle: T\n---\n", 'FRONT_MATTER_UNSUPPORTED_VERSION'],
+    'missing title' => ["---\navp: 1\n---\n", 'FRONT_MATTER_MISSING_TITLE'],
+    'empty title' => ["---\navp: 1\ntitle:\n---\n", 'FRONT_MATTER_MISSING_TITLE'],
+    'bad auth' => ["---\navp: 1\ntitle: T\nauth: basic\n---\n", 'FRONT_MATTER_INVALID_VALUE'],
+    'bad version' => ["---\navp: 1\ntitle: T\nversion: \"!!\"\n---\n", 'FRONT_MATTER_INVALID_VALUE'],
+    'list for scalar' => ["---\navp: 1\ntitle:\n  - a\n---\n", 'FRONT_MATTER_INVALID_VALUE'],
+    'syntax' => ["---\navp: 1\ntitle: T\nthis is not a pair\n---\n", 'FRONT_MATTER_SYNTAX'],
+    'unterminated' => ["---\navp: 1\ntitle: T\n\n# Title\n", 'FRONT_MATTER_UNTERMINATED'],
+    'bad server' => ["---\navp: 1\ntitle: T\nservers:\n  - ftp://nope\n---\n", 'INVALID_SERVER'],
+];
+foreach ($cases as $name => [$header, $code]) {
+    $doc = parse($header . "\n## Users — `users/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | List |\n");
+    check(in_array($code, errorCodes($doc), true), "Front-matter {$name} is reported as {$code}.");
+}
+$unterminated = parse("---\navp: 1\ntitle: T\n\n# Title\n");
+check(errorCodes($unterminated)[0] === 'FRONT_MATTER_UNTERMINATED' && $unterminated['errors'][0]['lines'][0] === 1, 'An unterminated header is an error that points at line 1.');
+
+// ================================================================ strict documents
+
+$ok = parse(strictDoc(USERS_TABLE));
+check($ok['errors'] === [] && codesOf($ok) === [] && !in_array('LEGACY_FORMAT', array_column($ok['warnings'], 'code'), true), 'A valid strict document has no errors and no LEGACY_FORMAT warning.');
+check($ok['openapi']['info']['title'] === 'Test API' && $ok['openapi']['info']['version'] === '1.0.0' && $ok['statistics']['endpoints'] === 1, 'The strict document is parsed like any other (title from the header, default version 1.0.0).');
+
+$overrides = parse(strictDoc("# Heading Title\n\nHeading description.\n" . USERS_TABLE, "---\navp: 1\ntitle: Header Title\nversion: 3.2.1\ndescription: Header description.\nservers:\n  - https://api.example.com/v1/\n---\n"));
+check($overrides['errors'] === [] && $overrides['openapi']['info'] === ['title' => 'Header Title', 'version' => '3.2.1', 'description' => 'Header description.'], 'Header title, version and description override the heading and first paragraph.');
+check($overrides['openapi']['servers'] === [['url' => 'https://api.example.com/v1']], 'Header servers become the OpenAPI servers (URLs normalized).');
+$fallback = parse(strictDoc("# Heading Title\n\nHeading description.\n" . USERS_TABLE));
+check($fallback['openapi']['info']['description'] === 'Heading description.', 'Without a header description, the first paragraph under the title is still used.');
+
+$merged = parse(strictDoc("\nEnvironments: Prod=https://api.example.com|login=/auth/login.php; Other=https://other.example.com\n" . USERS_TABLE, "---\navp: 1\ntitle: T\nservers:\n  - https://api.example.com\n---\n"));
+check($merged['openapi']['servers'] === [['url' => 'https://api.example.com', 'description' => 'Prod', 'x-login-url' => '/auth/login.php'], ['url' => 'https://other.example.com', 'description' => 'Other']], 'A body Environments: entry for a header server adds its details; other body servers follow.');
+
+$none = parse(strictDoc(USERS_TABLE, "---\navp: 1\ntitle: T\nauth: none\n---\n"));
+$noneDoc = json_decode(json_encode($none['openapi']), true);
+check($noneDoc['paths']['/users/list.php']['get']['security'] === [] && !isset($noneDoc['components']), 'auth: none makes every endpoint public and drops the bearer scheme.');
+$bearer = json_decode(json_encode(parse(strictDoc(USERS_TABLE))['openapi']), true);
+check($bearer['paths']['/users/list.php']['get']['security'] === [['BearerAuth' => []]], 'auth defaults to bearer.');
+
+// Every structural problem a lenient parse only warns about is an error in a strict document.
+$problems = [
+    'INVALID_METHOD' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| FETCH | `list.php` | x |\n",
+    'MISSING_ENDPOINT_PATH' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | | x |\n| GET | `list.php` | y |\n",
+    'INVALID_TABLE_ROW' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| | | |\n| GET | `list.php` | y |\n",
+    'DUPLICATE_ENDPOINT' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n| GET | `list.php` | b |\n",
+    'UNRESOLVED_PREFIX' => "\n## No prefix here\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n",
+    'UNRECOGNIZED_COLUMN' => "\n## U — `u/`\n\n| Method | Endpoint | Notes | Description |\n|---|---|---|---|\n| GET | `list.php` | n | a |\n",
+    'INVALID_SERVER' => "\nServers: ftp://nope\n\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n",
+    'NO_ENDPOINTS_FOUND' => "\nJust text.\n",
+    'UNBOUND_JSON_BLOCK' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n\nSome text\n\n```json\n{\"a\": 1}\n```\n",
+    'INVALID_JSON_BLOCK' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n\nResponse:\n\n```json\n{ nope\n```\n",
+    'DOT_SEGMENT_PATH' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `../list.php` | a |\n",
+    'UNRESOLVED_PUBLIC_ENDPOINT' => "\nEvery endpoint except `ghost.php` requires a token.\n\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n",
+];
+foreach ($problems as $code => $body) {
+    $strictResult = parse(strictDoc($body));
+    $lenientResult = parse($body);
+    check(in_array($code, errorCodes($strictResult), true) && !in_array($code, array_column($strictResult['warnings'], 'code'), true), "Strict: {$code} is an error, not a warning.");
+    $lenientCode = in_array($code, ['INVALID_METHOD', 'MISSING_ENDPOINT_PATH'], true) ? 'INVALID_TABLE_ROW' : $code; // the lenient parser keeps its single row code
+    check(in_array($lenientCode, codesOf($lenientResult), true) && $lenientResult['errors'] === [], "Lenient (no header): the same document only warns {$lenientCode}.");
+}
+$notUtf8 = parse(strictDoc(USERS_TABLE) . "caf\xE9\n");
+check(in_array('NOT_UTF8', errorCodes($notUtf8), true), 'Strict: a non-UTF-8 document is an error.');
+
+$rowDoc = strictDoc("\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n| FETCH | `bad.php` | b |\n");
+$badLine = array_search('| FETCH | `bad.php` | b |', explode("\n", $rowDoc), true) + 1;
+$rowResult = parse($rowDoc);
+check($rowResult['errors'][0]['lines'] === [$badLine, $badLine] && $rowResult['statistics']['endpoints'] === 1, 'Strict errors carry the real line number (the header does not shift it) and the rest of the document is still parsed.');
+check(parse(strictDoc("\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n| GET | `list.php` | b |\n"))['errors'][0]['endpoint'] === 'GET /u/list.php', 'A strict error names the endpoint it is about.');
+
+// ================================================================ legacy documents
+
+$legacy = parse("# API\n\n## Users — `users/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | List |\n");
+check($legacy['errors'] === [] && array_count_values(array_column($legacy['warnings'], 'code'))['LEGACY_FORMAT'] === 1, 'A document without a header has no errors and exactly one LEGACY_FORMAT warning.');
+$ruleStart = parse("---\n\n# API\n\n## Users — `users/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | List |\n");
+check($ruleStart['errors'] === [] && $ruleStart['statistics']['endpoints'] === 1 && in_array('LEGACY_FORMAT', array_column($ruleStart['warnings'], 'code'), true), 'A document that merely starts with a horizontal rule is still a legacy document.');
+check(array_keys($legacy) === ['openapi', 'warnings', 'statistics', 'errors'] && array_keys($legacy['statistics']) === ['endpoints', 'methods', 'tags'], 'The parse result keeps its shape (openapi, warnings, statistics) and adds errors.');
+
+// ================================================================ Migrator
+
+$legacyDoc = "# Ticket API\n\nIntro text.\n\nServers: https://api.example.com/v1/\n\nEnvironments: Prod=https://api.prod.com|login=/auth/login.php; Staging=https://api.staging.com\n\n## Accounts — `accounts/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `fetch/list.php` | List |\n";
+$migrated = Migrator::migrate($legacyDoc);
+check(str_starts_with($migrated, "---\navp: 1\ntitle: Ticket API\nservers:\n  - https://api.example.com/v1\n  - https://api.prod.com\n  - https://api.staging.com\n---\n\n# Ticket API"), 'Migrator adds the header (avp, title, servers) in front of the unchanged body.');
+check(str_ends_with($migrated, $legacyDoc), 'Migrator leaves the body byte-for-byte untouched.');
+check(Migrator::migrate($migrated) === $migrated, 'Migrator is idempotent: a document that has the header is returned unchanged.');
+$before = parse($legacyDoc);
+$after = parse($migrated);
+check($after['errors'] === [] && json_encode($after['openapi']) === json_encode($before['openapi']) && $after['statistics'] === $before['statistics'], 'A migrated document produces the same OpenAPI, with no errors.');
+check(!in_array('LEGACY_FORMAT', array_column($after['warnings'], 'code'), true), 'A migrated document is no longer "legacy".');
+$crlf = Migrator::migrate(str_replace("\n", "\r\n", $legacyDoc));
+check(str_starts_with($crlf, "---\r\navp: 1\r\n") && substr_count($crlf, "\n") === substr_count($crlf, "\r\n"), 'Migrator keeps CRLF line endings.');
+$bom = Migrator::migrate("\xEF\xBB\xBF" . $legacyDoc);
+check(str_starts_with($bom, "\xEF\xBB\xBF---\n") && !str_contains(substr($bom, 3), "\xEF\xBB\xBF") && parse($bom)['errors'] === [], 'Migrator keeps a BOM at the very start, in front of the header.');
+$quoted = Migrator::migrate("# Billing: v2 #1 API\n\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `l.php` | x |\n");
+check(str_starts_with($quoted, "---\navp: 1\ntitle: \"Billing: v2 #1 API\"\n---\n") && parse($quoted)['openapi']['info']['title'] === 'Billing: v2 #1 API', 'Migrator quotes a title that would not read back as plain text.');
+$untitled = Migrator::migrate("## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `l.php` | x |\n");
+check(str_contains($untitled, 'title: Untitled API') && parse($untitled)['errors'] === [], 'Migrator gives a document without a heading the title "Untitled API".');
+
+// ================================================================ Validator
+
+$report = Validator::check($legacyDoc);
+// The facade never blocks: strict errors come back as warnings (first), with no errors left.
+$folded = MarkdownOpenApiParser::parse(strictDoc("
+## U — `u/`
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `list.php` | a |
+| GET | `list.php` | b |
+"));
+check($folded['errors'] === [] && ($folded['warnings'][0]['code'] ?? '') === 'DUPLICATE_ENDPOINT' && $folded['statistics']['endpoints'] >= 1, 'MarkdownOpenApiParser::parse reports strict errors as warnings and still returns the OpenAPI.');
+check($report['ok'] === true && $report['strict'] === false && $report['errors'] === [] && $report['statistics']['endpoints'] === 1, 'Validator::check reports a legacy document as ok but not strict.');
+$strictReport = Validator::check(strictDoc("\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `l.php` | a |\n| GET | `l.php` | b |\n"));
+check($strictReport['ok'] === false && $strictReport['strict'] === true && array_column($strictReport['errors'], 'code') === ['DUPLICATE_ENDPOINT'], 'Validator::check reports strict errors and sets ok to false.');
+check(Validator::check(strictDoc(USERS_TABLE))['ok'] === true, 'Validator::check passes a clean strict document.');
+check(Validator::check($migrated)['strict'] === true && Validator::check(file_get_contents($templatePath))['ok'] === true && Validator::check(file_get_contents($templatePath))['strict'] === true, 'The bundled template is a strict document with no errors.');
+check(trim(str_replace("\r\n", "\n", (string) file_get_contents("{$root}/resources/templates/api-readme.md"))) === trim(str_replace("\r\n", "\n", (string) file_get_contents($templatePath))), 'The two bundled template copies have identical content.');
 
 // ---------------------------------------------------------------- done
 

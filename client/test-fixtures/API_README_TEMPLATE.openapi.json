@@ -3,18 +3,15 @@
     "info": {
         "title": "Example Service API",
         "version": "1.0.0",
-        "description": "REST API for the fictional Example Service: customers, their documents and orders, plus a few reference lists. Replace this paragraph with one or two sentences about your own API; it becomes the description of the generated OpenAPI document."
+        "description": "A short description of your API. It becomes the description of the generated OpenAPI document."
     },
     "paths": {
         "/customers/fetch/getCustomers.php": {
             "get": {
                 "summary": "Paginated list of customers.",
-                "description": "Paginated list of customers. ?search= matches name or email, ?status=active|inactive filters by status\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
+                "description": "Paginated list of customers. ?search= matches name.",
                 "tags": [
                     "Customers"
-                ],
-                "x-permissions": [
-                    "customers:view"
                 ],
                 "security": [
                     {
@@ -23,23 +20,24 @@
                 ],
                 "parameters": [
                     {
-                        "name": "search",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
                         "name": "status",
                         "in": "query",
-                        "required": false,
+                        "required": true,
                         "schema": {
                             "type": "string",
                             "enum": [
                                 "active",
                                 "inactive"
                             ]
+                        },
+                        "example": "active|inactive"
+                    },
+                    {
+                        "name": "search",
+                        "in": "query",
+                        "required": false,
+                        "schema": {
+                            "type": "string"
                         }
                     },
                     {
@@ -59,26 +57,6 @@
                             "type": "integer",
                             "default": 20,
                             "maximum": 100
-                        }
-                    },
-                    {
-                        "name": "sort",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "name": "order",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string",
-                            "enum": [
-                                "asc",
-                                "desc"
-                            ]
                         }
                     }
                 ],
@@ -123,9 +101,6 @@
                                                     }
                                                 }
                                             }
-                                        },
-                                        "timestamp": {
-                                            "type": "string"
                                         }
                                     }
                                 },
@@ -140,8 +115,7 @@
                                             "total": 42,
                                             "total_pages": 3
                                         }
-                                    },
-                                    "timestamp": "2026-01-01T00:00:00Z"
+                                    }
                                 }
                             }
                         }
@@ -152,13 +126,10 @@
         },
         "/customers/fetch/getCustomer.php": {
             "get": {
-                "summary": "One customer by id.",
-                "description": "One customer by id. 404 customer not found. Also reachable at fetch/getCustomerById.php?customer_id=1 (alias)\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
+                "summary": "One customer.",
+                "description": "One customer. requires customer_id. 404 customer not found",
                 "tags": [
                     "Customers"
-                ],
-                "x-permissions": [
-                    "customers:view"
                 ],
                 "security": [
                     {
@@ -171,7 +142,7 @@
                         "in": "query",
                         "required": true,
                         "schema": {
-                            "type": "integer"
+                            "type": "string"
                         },
                         "example": 1
                     }
@@ -187,54 +158,12 @@
                 "operationId": "get_customers_fetch_getCustomer_php"
             }
         },
-        "/customers/fetch/getCustomerById.php": {
-            "get": {
-                "x-alias-of": "GET /customers/fetch/getCustomer.php",
-                "summary": "One customer by id.",
-                "description": "One customer by id. 404 customer not found. Also reachable at fetch/getCustomerById.php?customer_id=1 (alias)\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
-                "tags": [
-                    "Customers"
-                ],
-                "x-permissions": [
-                    "customers:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "parameters": [
-                    {
-                        "name": "customer_id",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "integer"
-                        },
-                        "example": 1
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    },
-                    "404": {
-                        "description": "customer not found"
-                    }
-                },
-                "operationId": "get_customers_fetch_getCustomerById_php"
-            }
-        },
         "/customers/modify/insertUpdateCustomer.php": {
             "post": {
-                "summary": "Create or update a customer (customer_id present means update): {customer_name, email, phone?, status?}.",
-                "description": "Create or update a customer (customer_id present means update): {customer_name, email, phone?, status?}. 409 duplicate email\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
+                "summary": "Creates a customer, or updates it when id is sent.",
+                "description": "Creates a customer, or updates it when id is sent. 409 duplicate email",
                 "tags": [
                     "Customers"
-                ],
-                "x-permissions": [
-                    "customers:add",
-                    "customers:edit"
                 ],
                 "security": [
                     {
@@ -248,7 +177,7 @@
                             "schema": {
                                 "type": "object",
                                 "properties": {
-                                    "customer_name": {
+                                    "name": {
                                         "type": "string"
                                     },
                                     "email": {
@@ -256,13 +185,10 @@
                                     },
                                     "phone": {
                                         "type": "string"
-                                    },
-                                    "status": {
-                                        "type": "string"
                                     }
                                 },
                                 "required": [
-                                    "customer_name",
+                                    "name",
                                     "email"
                                 ]
                             }
@@ -282,13 +208,10 @@
         },
         "/customers/remove/removeCustomer.php": {
             "post": {
-                "summary": "Soft-delete a customer",
-                "description": "Soft-delete a customer\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
+                "summary": "Deletes a customer.",
+                "description": "Deletes a customer.",
                 "tags": [
                     "Customers"
-                ],
-                "x-permissions": [
-                    "customers:delete"
                 ],
                 "security": [
                     {
@@ -316,814 +239,13 @@
                 "responses": {
                     "200": {
                         "description": "Success"
-                    },
-                    "409": {
-                        "description": "customer still has open orders"
                     }
                 },
                 "operationId": "post_customers_remove_removeCustomer_php"
-            },
-            "delete": {
-                "summary": "Soft-delete a customer",
-                "description": "Soft-delete a customer\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
-                "tags": [
-                    "Customers"
-                ],
-                "x-permissions": [
-                    "customers:delete"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "customer_id": {
-                                        "type": "string"
-                                    }
-                                },
-                                "required": [
-                                    "customer_id"
-                                ]
-                            }
-                        }
-                    }
-                },
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    },
-                    "409": {
-                        "description": "customer still has open orders"
-                    }
-                },
-                "operationId": "delete_customers_remove_removeCustomer_php"
-            }
-        },
-        "/customers/fetch/getCustomerOrders.php": {
-            "get": {
-                "summary": "Orders of one customer; requires customer_id",
-                "description": "Orders of one customer; requires customer_id\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
-                "tags": [
-                    "Customers"
-                ],
-                "x-permissions": [
-                    "orders:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "parameters": [
-                    {
-                        "name": "customer_id",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_customers_fetch_getCustomerOrders_php"
-            }
-        },
-        "/customers/modify/changeCustomerStatus.php": {
-            "post": {
-                "summary": "Activate or deactivate a customer",
-                "description": "Activate or deactivate a customer\n\nCustomers are never hard-deleted: removing one sets is_deleted and hides it from every list. Email addresses are unique per account, compared case-insensitively.",
-                "tags": [
-                    "Customers"
-                ],
-                "x-permissions": [
-                    "customers:edit"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "customer_id": {
-                                        "type": "integer"
-                                    },
-                                    "status": {
-                                        "type": "string"
-                                    }
-                                }
-                            },
-                            "example": {
-                                "customer_id": 7,
-                                "status": "inactive"
-                            }
-                        }
-                    }
-                },
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "post_customers_modify_changeCustomerStatus_php"
-            }
-        },
-        "/customers/documents/fetch/getDocuments.php": {
-            "get": {
-                "summary": "List documents of a customer, newest first",
-                "description": "List documents of a customer, newest first\n\nAccepted file types: PDF, PNG and JPEG, sniffed from the real file bytes. Max 10MB. Uploading logs a document_added history entry. Note: files live on local disk and are wiped on every deploy until object storage is wired in.",
-                "tags": [
-                    "Customers"
-                ],
-                "x-permissions": [
-                    "customers:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "parameters": [
-                    {
-                        "name": "customer_id",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "integer"
-                        },
-                        "example": 1
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_customers_documents_fetch_getDocuments_php"
-            }
-        },
-        "/customers/documents/modify/uploadDocument.php": {
-            "post": {
-                "summary": "multipart/form-data: customer_id, document_type?, file field file",
-                "description": "multipart/form-data: customer_id, document_type?, file field file\n\nAccepted file types: PDF, PNG and JPEG, sniffed from the real file bytes. Max 10MB. Uploading logs a document_added history entry. Note: files live on local disk and are wiped on every deploy until object storage is wired in.",
-                "tags": [
-                    "Customers"
-                ],
-                "x-permissions": [
-                    "customers:edit"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "multipart/form-data": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "customer_id": {
-                                        "type": "string"
-                                    },
-                                    "document_type": {
-                                        "type": "string"
-                                    },
-                                    "file": {
-                                        "type": "string",
-                                        "format": "binary"
-                                    }
-                                },
-                                "required": [
-                                    "customer_id",
-                                    "file"
-                                ]
-                            }
-                        }
-                    }
-                },
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "post_customers_documents_modify_uploadDocument_php"
-            }
-        },
-        "/customers/documents/remove/removeDocument.php": {
-            "post": {
-                "summary": "Soft-delete a document",
-                "description": "Soft-delete a document\n\nAccepted file types: PDF, PNG and JPEG, sniffed from the real file bytes. Max 10MB. Uploading logs a document_added history entry. Note: files live on local disk and are wiped on every deploy until object storage is wired in.",
-                "tags": [
-                    "Customers"
-                ],
-                "x-permissions": [
-                    "customers:edit"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "document_id": {
-                                        "type": "string"
-                                    }
-                                },
-                                "required": [
-                                    "document_id"
-                                ]
-                            }
-                        }
-                    }
-                },
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "post_customers_documents_remove_removeDocument_php"
-            }
-        },
-        "/orders/fetch/getOrders.php": {
-            "get": {
-                "summary": "Paginated list of orders",
-                "description": "Paginated list of orders",
-                "tags": [
-                    "Orders"
-                ],
-                "x-permissions": [
-                    "orders:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "parameters": [
-                    {
-                        "name": "page",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "default": 1
-                        }
-                    },
-                    {
-                        "name": "page_size",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "integer",
-                            "default": 20,
-                            "maximum": 100
-                        }
-                    },
-                    {
-                        "name": "search",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "name": "sort",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string",
-                            "enum": [
-                                "created_at",
-                                "total"
-                            ],
-                            "default": "created_at"
-                        }
-                    },
-                    {
-                        "name": "order",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string",
-                            "enum": [
-                                "asc",
-                                "desc"
-                            ],
-                            "default": "asc"
-                        }
-                    },
-                    {
-                        "name": "customer_id",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    {
-                        "name": "status",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string",
-                            "enum": [
-                                "open",
-                                "shipped",
-                                "cancelled"
-                            ],
-                            "default": "open"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "statusCode": {
-                                            "type": "integer"
-                                        },
-                                        "message": {
-                                            "type": "string"
-                                        },
-                                        "data": {
-                                            "type": "object",
-                                            "properties": {
-                                                "items": {
-                                                    "type": "array",
-                                                    "items": {
-                                                        "type": "string"
-                                                    }
-                                                },
-                                                "pagination": {
-                                                    "type": "object",
-                                                    "properties": {
-                                                        "page": {
-                                                            "type": "integer"
-                                                        },
-                                                        "page_size": {
-                                                            "type": "integer"
-                                                        },
-                                                        "total": {
-                                                            "type": "integer"
-                                                        },
-                                                        "total_pages": {
-                                                            "type": "integer"
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        },
-                                        "timestamp": {
-                                            "type": "string"
-                                        }
-                                    }
-                                },
-                                "example": {
-                                    "statusCode": 200,
-                                    "message": "Success",
-                                    "data": {
-                                        "items": [],
-                                        "pagination": {
-                                            "page": 1,
-                                            "page_size": 20,
-                                            "total": 42,
-                                            "total_pages": 3
-                                        }
-                                    },
-                                    "timestamp": "2026-01-01T00:00:00Z"
-                                }
-                            }
-                        }
-                    }
-                },
-                "operationId": "get_orders_fetch_getOrders_php"
-            }
-        },
-        "/orders/modify/createOrder.php": {
-            "post": {
-                "summary": "Place a new order",
-                "description": "Place a new order\n\nReturns the stored order. The total is always recalculated on the server.",
-                "tags": [
-                    "Orders"
-                ],
-                "x-permissions": [
-                    "orders:add"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "customer_id": {
-                                        "type": "integer"
-                                    },
-                                    "items": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "properties": {
-                                                "sku": {
-                                                    "type": "string"
-                                                },
-                                                "quantity": {
-                                                    "type": "integer"
-                                                }
-                                            }
-                                        }
-                                    },
-                                    "note": {
-                                        "type": "string"
-                                    }
-                                }
-                            },
-                            "example": {
-                                "customer_id": 1,
-                                "items": [
-                                    {
-                                        "sku": "A-100",
-                                        "quantity": 2
-                                    }
-                                ],
-                                "note": "Leave at the door"
-                            }
-                        }
-                    }
-                },
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "order_id": {
-                                            "type": "integer"
-                                        },
-                                        "customer_id": {
-                                            "type": "integer"
-                                        },
-                                        "total": {
-                                            "type": "number"
-                                        },
-                                        "status": {
-                                            "type": "string"
-                                        }
-                                    }
-                                },
-                                "example": {
-                                    "order_id": 501,
-                                    "customer_id": 1,
-                                    "total": 49.9,
-                                    "status": "open"
-                                }
-                            }
-                        }
-                    },
-                    "400": {
-                        "description": "empty items"
-                    },
-                    "404": {
-                        "description": "unknown customer"
-                    }
-                },
-                "operationId": "post_orders_modify_createOrder_php"
-            }
-        },
-        "/reports/fetch/getSalesSummary.php": {
-            "get": {
-                "summary": "Sales totals from a date; ?to_date=YYYY-MM-DD limits the range",
-                "description": "Sales totals from a date; ?to_date=YYYY-MM-DD limits the range\n\nBase path: reports/",
-                "tags": [
-                    "Reports"
-                ],
-                "x-permissions": [
-                    "reports:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "parameters": [
-                    {
-                        "name": "from_date",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "string",
-                            "format": "date"
-                        },
-                        "example": "YYYY-MM-DD"
-                    },
-                    {
-                        "name": "to_date",
-                        "in": "query",
-                        "required": false,
-                        "schema": {
-                            "type": "string",
-                            "format": "date"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_reports_fetch_getSalesSummary_php"
-            }
-        },
-        "/masters/fetch/getCountries.php": {
-            "get": {
-                "summary": "Countries: List",
-                "description": "Countries: List",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "countries:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_masters_fetch_getCountries_php"
-            }
-        },
-        "/masters/fetch/getCountry.php": {
-            "get": {
-                "summary": "Countries: Single",
-                "description": "Countries: Single",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "countries:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "parameters": [
-                    {
-                        "name": "country_id",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "integer"
-                        },
-                        "example": 1
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_masters_fetch_getCountry_php"
-            }
-        },
-        "/masters/modify/insertUpdateCountry.php": {
-            "post": {
-                "summary": "Countries: Create / Update",
-                "description": "Countries: Create / Update",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "countries:add",
-                    "countries:edit"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "post_masters_modify_insertUpdateCountry_php"
-            }
-        },
-        "/masters/remove/removeCountry.php": {
-            "post": {
-                "summary": "Countries: Remove",
-                "description": "Countries: Remove",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "countries:delete"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "post_masters_remove_removeCountry_php"
-            },
-            "delete": {
-                "summary": "Countries: Remove",
-                "description": "Countries: Remove",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "countries:delete"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "delete_masters_remove_removeCountry_php"
-            }
-        },
-        "/masters/fetch/getCurrencies.php": {
-            "get": {
-                "summary": "Currencies: List",
-                "description": "Currencies: List",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "currencies:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_masters_fetch_getCurrencies_php"
-            }
-        },
-        "/masters/fetch/getCurrency.php": {
-            "get": {
-                "summary": "Currencies: Single",
-                "description": "Currencies: Single",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "currencies:view"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "parameters": [
-                    {
-                        "name": "currency_id",
-                        "in": "query",
-                        "required": true,
-                        "schema": {
-                            "type": "integer"
-                        },
-                        "example": 1
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_masters_fetch_getCurrency_php"
-            }
-        },
-        "/masters/modify/insertUpdateCurrency.php": {
-            "post": {
-                "summary": "Currencies: Create / Update",
-                "description": "Currencies: Create / Update",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "currencies:add",
-                    "currencies:edit"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "post_masters_modify_insertUpdateCurrency_php"
-            }
-        },
-        "/masters/remove/removeCurrency.php": {
-            "post": {
-                "summary": "Currencies: Remove",
-                "description": "Currencies: Remove",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "currencies:delete"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "post_masters_remove_removeCurrency_php"
-            },
-            "delete": {
-                "summary": "Currencies: Remove",
-                "description": "Currencies: Remove",
-                "tags": [
-                    "Reference data"
-                ],
-                "x-permissions": [
-                    "currencies:delete"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "delete_masters_remove_removeCurrency_php"
             }
         },
         "/auth/login.php": {
             "post": {
-                "summary": "Sessions.",
-                "description": "Sessions. Each login creates its own session, so a user can stay signed in on several devices.",
                 "tags": [
                     "Authentication"
                 ],
@@ -1182,14 +304,8 @@
                                                 },
                                                 "full_name": {
                                                     "type": "string"
-                                                },
-                                                "role_name": {
-                                                    "type": "string"
                                                 }
                                             }
-                                        },
-                                        "timestamp": {
-                                            "type": "string"
                                         }
                                     }
                                 },
@@ -1200,96 +316,17 @@
                                         "token": "<jwt>",
                                         "expires_in": 86400,
                                         "user_id": 1,
-                                        "full_name": "Jane Doe",
-                                        "role_name": "Manager"
-                                    },
-                                    "timestamp": "2026-01-01T00:00:00Z"
+                                        "full_name": "Jane Doe"
+                                    }
                                 }
                             }
                         }
                     },
                     "401": {
                         "description": "invalid credentials"
-                    },
-                    "429": {
-                        "description": "too many failed attempts"
                     }
                 },
                 "operationId": "post_auth_login_php"
-            }
-        },
-        "/auth/me.php": {
-            "get": {
-                "tags": [
-                    "Authentication"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_auth_me_php"
-            }
-        },
-        "/orders/cancelOrder.php": {
-            "post": {
-                "tags": [
-                    "Orders"
-                ],
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "properties": {
-                                    "order_id": {
-                                        "type": "string"
-                                    },
-                                    "reason": {
-                                        "type": "string"
-                                    }
-                                },
-                                "required": [
-                                    "order_id"
-                                ]
-                            }
-                        }
-                    }
-                },
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    },
-                    "409": {
-                        "description": "order already shipped"
-                    }
-                },
-                "operationId": "post_orders_cancelOrder_php"
-            }
-        },
-        "/public/status.php": {
-            "get": {
-                "tags": [
-                    "Health"
-                ],
-                "security": [],
-                "responses": {
-                    "200": {
-                        "description": "Success"
-                    }
-                },
-                "operationId": "get_public_status_php"
             }
         }
     },
@@ -1307,19 +344,7 @@
             "name": "Customers"
         },
         {
-            "name": "Orders"
-        },
-        {
-            "name": "Reports"
-        },
-        {
-            "name": "Reference data"
-        },
-        {
             "name": "Authentication"
-        },
-        {
-            "name": "Health"
         }
     ]
 }

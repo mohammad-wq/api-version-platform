@@ -5,7 +5,9 @@ declare(strict_types=1);
 // Exploratory probe: hostile inputs through MarkdownOpenApiParser with warnings-as-errors.
 // Not part of the CI suite; used to find fault-tolerance gaps before writing assertions.
 
-require __DIR__ . '/../src/MarkdownOpenApiParser.php';
+require __DIR__ . '/../src/autoload.php';
+
+use Mohammad\ApiVersionPlatform\MarkdownOpenApiParser;
 
 error_reporting(E_ALL);
 set_error_handler(static function (int $severity, string $message, string $file, int $line): bool {

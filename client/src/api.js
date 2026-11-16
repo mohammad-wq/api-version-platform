@@ -294,6 +294,23 @@ export const api = {
       headerFormat: normalizeHeaderFormat(settings.headerFormat),
     });
   },
+  // cloud (the hosted platform; the local server makes the calls and keeps the sign-in)
+  cloudStatus: () => get("/cloud/status"),
+  cloudLogin: ({ url, email, password }) => post("/cloud/login", { url, email, password }),
+  cloudLogout: () => post("/cloud/logout", {}),
+  cloudProjects: async () => asArray(await get("/cloud/projects")),
+  cloudVersions: async (projectId) => asArray(await get("/cloud/versions", { project_id: projectId })),
+  cloudPublish: ({ versionId, projectId, projectName, newProjectName, version, note }) =>
+    post("/cloud/publish", {
+      version_id: versionId,
+      project_id: projectId ?? undefined,
+      project_name: projectName,
+      new_project_name: newProjectName,
+      version,
+      note,
+    }),
+  cloudImport: ({ versionId, label }) => post("/cloud/import", { version_id: versionId, label }),
+
   // versions
   getVersions: async (projectId) =>
     asArray(await get("/versions/fetch/getVersions.php", { project_id: projectId })).map(normalizeVersion),

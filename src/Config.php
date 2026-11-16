@@ -26,11 +26,14 @@ final class Config
     private const DEFAULTS = [
         'paths' => [
             'readme' => null,
-            'storage' => '.avp/storage.sqlite',
+            'storage' => '.avp',
         ],
         'server' => [
             'host' => '127.0.0.1',
             'port' => 8080,
+        ],
+        'cloud' => [
+            'url' => Cloud::DEFAULT_URL,
         ],
     ];
 
@@ -39,6 +42,7 @@ final class Config
         'AVP_STORAGE_PATH' => ['paths', 'storage'],
         'AVP_HOST' => ['server', 'host'],
         'AVP_PORT' => ['server', 'port'],
+        'AVP_CLOUD_URL' => ['cloud', 'url'],
     ];
 
     /**
@@ -100,6 +104,10 @@ final class Config
         if (!is_string($storage) || trim($storage) === '') {
             $errors[] = 'paths.storage is required.';
         }
+        $cloud = $config['cloud']['url'] ?? null;
+        if (!is_string($cloud) || !preg_match('#^https?://#i', $cloud)) {
+            $errors[] = 'cloud.url must be an http(s) URL.';
+        }
         $host = $config['server']['host'] ?? null;
         if (!is_string($host) || trim($host) === '') {
             $errors[] = 'server.host must be a host name or IP address.';
@@ -113,7 +121,7 @@ final class Config
     /** The value as a TCP port, or null when it is not one. */
     public static function port(mixed $value): ?int
     {
-        if (is_string($value) && ctype_digit(trim($value))) $value = (int) trim($value);
+        if (is_string($value) && preg_match('/^\d+$/', trim($value)) === 1) $value = (int) trim($value);
         return is_int($value) && $value >= 1 && $value <= 65535 ? $value : null;
     }
 
@@ -152,8 +160,7 @@ final class Config
             $markdown = (string) file_get_contents($path);
             // Every endpoint path is written in backticks; skip the parser for documents without any.
             if (!str_contains($markdown, '`')) continue;
-            require_once __DIR__ . '/MarkdownOpenApiParser.php';
-            if ((\MarkdownOpenApiParser::parse($markdown)['statistics']['endpoints'] ?? 0) > 0) {
+            if ((MarkdownOpenApiParser::parse($markdown)['statistics']['endpoints'] ?? 0) > 0) {
                 return $path;
             }
         }

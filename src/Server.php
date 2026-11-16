@@ -135,9 +135,10 @@ final class Server
      * Sets a project up in one step: avp.config.php, the self-ignoring .avp/ state folder and,
      * when the project has no API document yet, API.md from the bundled template.
      *
+     * @param string|null $readme Pins this file as the API document (in avp.config.php) instead of auto-detecting one
      * @return array{config: string, state: string, document: string, documentCreated: bool}
      */
-    public static function init(string $projectRoot, bool $force = false): array
+    public static function init(string $projectRoot, bool $force = false, ?string $readme = null): array
     {
         $projectRoot = rtrim($projectRoot, '/\\');
         $target = $projectRoot . DIRECTORY_SEPARATOR . Config::FILE_NAME;
@@ -150,21 +151,26 @@ final class Server
             throw new \RuntimeException("{$stateDir} exists but is not a folder; remove or rename it and run init again.");
         }
 
+        if ($readme !== null && !is_file(Config::absolute($projectRoot, $readme))) {
+            throw new \RuntimeException("--readme file not found: " . Config::absolute($projectRoot, $readme));
+        }
         $template = file_get_contents(self::packageRoot() . '/config/avp.config.example.php');
+        if ($template !== false && $readme !== null) {
+            $template = str_replace("'readme' => null,", "'readme' => " . var_export(str_replace('\\', '/', $readme), true) . ',', $template);
+        }
         if ($template === false || @file_put_contents($target, $template) === false) {
             throw new \RuntimeException("Could not write {$target}.");
         }
-        if (!is_dir($stateDir) && !@mkdir($stateDir, 0777, true) && !is_dir($stateDir)) {
+        if (!is_dir($stateDir) && !@mkdir($stateDir, 0775, true) && !is_dir($stateDir)) {
             throw new \RuntimeException("Could not create {$stateDir}.");
         }
         Storage::ignoreInGit($stateDir);
 
-        require_once __DIR__ . '/MarkdownOpenApiParser.php';
-        $document = Config::detectReadme($projectRoot);
+        $document = $readme !== null ? Config::absolute($projectRoot, $readme) : Config::detectReadme($projectRoot);
         $hasEndpoints = is_file($document)
-            && (\MarkdownOpenApiParser::parse((string) file_get_contents($document))['statistics']['endpoints'] ?? 0) > 0;
+            && (MarkdownOpenApiParser::parse((string) file_get_contents($document))['statistics']['endpoints'] ?? 0) > 0;
         $created = false;
-        if (!$hasEndpoints) {
+        if (!$hasEndpoints && $readme === null) {
             // README.md usually describes the project, so the API goes into its own API.md.
             $document = $projectRoot . DIRECTORY_SEPARATOR . 'API.md';
             if (!is_file($document)) {
