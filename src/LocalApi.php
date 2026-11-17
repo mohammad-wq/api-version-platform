@@ -56,6 +56,9 @@ final class LocalApi
         $handler = $routes["{$method} {$route}"] ?? null;
         if ($handler === null) {
             if (!str_ends_with($route, '.php')) return false;
+            foreach (array_keys($routes) as $known) {
+                if (substr($known, strpos($known, ' ') + 1) === $route) self::send(405, 'Method not allowed: use ' . strtok($known, ' ') . ' for this route.');
+            }
             self::send(404, 'This feature is not available in the local package.');
         }
         try {
@@ -90,7 +93,13 @@ final class LocalApi
     private function input(): array
     {
         static $input = null;
-        $input ??= json_decode((string) file_get_contents('php://input'), true);
+        if ($input === null) {
+            $body = (string) file_get_contents('php://input');
+            $input = trim($body) === '' ? [] : json_decode($body, true);
+            if ($input === null && json_last_error() !== JSON_ERROR_NONE) {
+                throw new \InvalidArgumentException('The request body is not valid JSON.');
+            }
+        }
         return is_array($input) ? $input : [];
     }
 

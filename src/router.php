@@ -67,6 +67,20 @@ if ($path !== '/' && $uiDir !== false) {
     if ($candidate !== false && is_file($candidate) && str_starts_with($candidate, $uiDir . DIRECTORY_SEPARATOR)) return false;
 }
 
+// A missing file (script, image, ...) is a 404, not the app page: a 200 HTML answer breaks module loading with a confusing error.
+if (preg_match('#\.[A-Za-z0-9]{1,8}$#', $path)) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'Not found.';
+    return true;
+}
+// Single-segment unknown paths (/login, /api) load the app, which sends the visitor home. A deeper unknown path
+// (/versions/1/compare) would load the page with a wrong asset base and render blank, so it redirects home instead.
+if (!preg_match('#^/(projects(/.*)?|[^/]*/?)$#', $path)) {
+    header('Location: /', true, 302);
+    return true;
+}
+
 $index = $uiDir === false ? null : $uiDir . DIRECTORY_SEPARATOR . 'index.html';
 if ($index === null || !is_file($index)) {
     http_response_code(503);

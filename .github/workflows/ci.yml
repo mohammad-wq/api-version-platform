@@ -16,6 +16,7 @@ jobs:
       - run: php scripts/lint.php
       - run: php tests/parser_test.php
       - run: php tests/storage_test.php
+      - run: php tests/publish_test.php
 
   client:
     runs-on: ubuntu-latest

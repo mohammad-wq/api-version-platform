@@ -3,7 +3,11 @@
 
 declare(strict_types=1);
 
+use Mohammad\ApiVersionPlatform\Cloud;
+use Mohammad\ApiVersionPlatform\CloudException;
 use Mohammad\ApiVersionPlatform\Config;
+use Mohammad\ApiVersionPlatform\Prompt;
+use Mohammad\ApiVersionPlatform\Publisher;
 use Mohammad\ApiVersionPlatform\Server;
 use Mohammad\ApiVersionPlatform\Storage;
 use Mohammad\ApiVersionPlatform\VersionService;
@@ -30,18 +34,25 @@ Usage:
   avp version show <label> [--format=json|openapi|markdown]
   avp check [--readme=PATH] [--json] [--ci]  list what the parser warns about (exit 1 with --ci if anything)
   avp migrate [--readme=PATH] [--write]  add the strict-format header to an older document
+  avp login [--url=URL] [--email=EMAIL]   sign in to the cloud platform (asks for what is missing)
+  avp logout                         forget the cloud sign-in
+  avp publish [label] [--note=TEXT] [--project=NAME]
+                                     put a version on the cloud: signs in if needed, uses this project's name
+                                     as the cloud project (created when missing) and picks the version for you
   avp template [--output=PATH] [--force]
   avp --version
 
 --ci makes status and version create fail (exit 1) when the document has parser warnings
 (the LEGACY_FORMAT notice is ignored: see `avp migrate`).
 --i-know-what-i-am-doing allows `serve` on a non-loopback host (the tool has no authentication).
+Cloud sign-in is saved in .avp/cloud.json (the web UI shares it). For scripts and CI set AVP_CLOUD_EMAIL and
+AVP_CLOUD_PASSWORD (the password is never taken from the command line).
 Running `avp` with no command starts the server. Every command accepts --config=PATH.
 Options take a value as --name=value or --name value.
 
 TXT;
 
-const AVP_VALUE_OPTIONS = ['note', 'readme', 'output', 'format', 'host', 'port', 'config'];
+const AVP_VALUE_OPTIONS = ['note', 'readme', 'output', 'format', 'host', 'port', 'config', 'email', 'url', 'project'];
 const AVP_FLAG_OPTIONS = ['force', 'json', 'allow-unchanged', 'help', 'open', 'version', 'ci', 'i-know-what-i-am-doing', 'write'];
 
 function avpFail(string $message, int $code = 1): never
@@ -89,6 +100,35 @@ function avpJson(mixed $value): void
     fwrite(STDOUT, json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) . PHP_EOL);
 }
 
+/** Signs in to the cloud, asking for the email and password in the terminal (up to three tries). */
+function avpCloudLogin(Cloud $cloud, array $options, string $url): void
+{
+    $email = (string) ($options['email'] ?? getenv('AVP_CLOUD_EMAIL') ?: '');
+    $password = (string) (getenv('AVP_CLOUD_PASSWORD') ?: '');
+    $interactive = Prompt::interactive();
+    $target = $url !== '' ? $url : (string) $cloud->status()['url'];
+    if ($email === '' || $password === '') {
+        fwrite(STDERR, "Sign in to {$target}\n");
+    }
+    for ($attempt = 1; $attempt <= 3; $attempt++) {
+        if ($email === '') $email = Prompt::ask('Email');
+        if ($password === '') $password = Prompt::secret('Password');
+        try {
+            $status = $cloud->login($url !== '' ? $url : null, $email, $password);
+            fwrite(STDOUT, 'Signed in to ' . $status['url'] . ' as ' . ($status['user']['name'] ?? $email) . ' (' . ($status['user']['email'] ?? $email) . ")\n");
+            if ($status['insecure']) fwrite(STDERR, "Warning: this address uses http://, so the password was sent unencrypted.\n");
+            return;
+        } catch (CloudException $e) {
+            $retry = $e->status === 401 && $interactive && $attempt < 3;
+            if (!$retry) throw $e;
+            fwrite(STDERR, $e->getMessage() . ". Try again.\n");
+            $password = '';
+        } catch (InvalidArgumentException $e) {
+            throw $e;
+        }
+    }
+}
+
 /** Warnings that fail --ci: everything except the notice that the document has no strict-format header. */
 function avpCiWarnings(array $warnings): array
 {
@@ -129,7 +169,7 @@ try {
         if (@file_put_contents($target, $template) === false) throw new RuntimeException("Could not write {$target}.");
         fwrite(STDOUT, "Wrote {$target}\n"); exit(0);
     }
-    if (!in_array($command, ['status', 'version', 'serve', 'check', 'migrate'], true)) {
+    if (!in_array($command, ['status', 'version', 'serve', 'check', 'migrate', 'login', 'logout', 'publish'], true)) {
         fwrite(STDERR, "Unknown command \"{$command}\".\n\n{$usage}"); exit(1);
     }
 
@@ -140,7 +180,8 @@ try {
     $configRoot = $configFile === null ? $projectRoot : dirname($configFile);
 
     if ($command === 'serve') {
-        $host = (string) ($options['host'] ?? $config['server']['host']);
+        $host = trim((string) ($options['host'] ?? $config['server']['host']));
+        if ($host === '') avpFail('--host needs a host name or IP address, e.g. --host=127.0.0.1.');
         $port = Config::port($options['port'] ?? $config['server']['port']);
         if ($port === null) avpFail('--port must be a whole number from 1 to 65535.');
         if (!in_array($host, ['127.0.0.1', 'localhost', '::1'], true)) {
@@ -166,6 +207,57 @@ try {
         }
         if (isset($options['json'])) avpJson($status); else fwrite(STDOUT, strtoupper($status['state']) . ': ' . ($status['message'] ?? $readme) . PHP_EOL);
         exit($status['state'] === 'modified' ? 2 : ($status['state'] === 'clean' || $status['state'] === 'uninitialized' ? 0 : 1));
+    }
+
+    if (in_array($command, ['login', 'logout', 'publish'], true)) {
+        $storage = new Storage($paths['storage']);
+        $cloud = new Cloud($storage->directory(), (string) ($options['url'] ?? $config['cloud']['url']));
+        if ($command === 'logout') {
+            $was = $cloud->status();
+            $cloud->logout();
+            fwrite(STDOUT, $was['connected'] ? "Signed out of {$was['url']}.\n" : "You were not signed in.\n");
+            exit(0);
+        }
+        if ($command === 'login') {
+            $status = $cloud->status();
+            if ($status['connected'] && !isset($options['email']) && !isset($options['url'])) {
+                try {
+                    $cloud->projects(); // proves the saved sign-in still works
+                    fwrite(STDOUT, 'Already signed in to ' . $status['url'] . ' as ' . ($status['user']['email'] ?? 'unknown') . ". Run `avp logout` first to switch accounts.\n");
+                    exit(0);
+                } catch (CloudException $e) {
+                    fwrite(STDERR, $e->getMessage() . "\n");
+                }
+            }
+            avpCloudLogin($cloud, $options, (string) ($options['url'] ?? ''));
+            exit(0);
+        }
+        // publish
+        $publisher = new Publisher($service, $storage, $cloud, $configRoot);
+        $status = $cloud->status();
+        if ($status['connected']) {
+            try {
+                $cloud->projects();
+            } catch (CloudException $e) {
+                if ($e->status !== 401) throw $e;
+                fwrite(STDERR, "Your cloud sign-in expired.\n");
+                $status['connected'] = false;
+            }
+        }
+        if (!$status['connected']) avpCloudLogin($cloud, $options, (string) ($options['url'] ?? ''));
+        $name = trim((string) ($options['project'] ?? '')) !== '' ? trim((string) $options['project']) : $publisher->projectName();
+        fwrite(STDOUT, "Publishing project \"{$name}\" to " . $cloud->status()['url'] . "\n");
+        $label = $positionals[1] ?? null;
+        $result = $publisher->publish($label, isset($options['note']) ? (string) $options['note'] : null, $name);
+        if ($result['alreadyPublished']) {
+            fwrite(STDOUT, "Nothing new to publish: {$result['version']} is already on the cloud project \"{$result['project']['name']}\".\n"
+                . "Edit your API document and run `avp publish` again, or name a version: avp publish v2.0.0\n{$result['url']}\n");
+            exit(0);
+        }
+        if ($result['localCreated']) fwrite(STDOUT, "Created local version {$result['version']} from {$readme}\n");
+        if ($result['project']['created']) fwrite(STDOUT, "Created cloud project \"{$result['project']['name']}\"\n");
+        fwrite(STDOUT, "Published {$result['version']}\n{$result['url']}\n");
+        exit(0);
     }
 
     if ($command === 'check' || $command === 'migrate') {

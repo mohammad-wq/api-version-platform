@@ -30,8 +30,14 @@ final class Storage
     /** @param string $path The state folder, or (for old configs) a file inside it such as `.avp/storage.sqlite` */
     public function __construct(string $path)
     {
+        // An old-style path to a SQLite file: the default `.avp/storage.sqlite` keeps its folder; any other file gets
+        // its own folder next to it (`data/my.sqlite` -> `data/my/`), so a shared parent folder is never filled with our files.
         $legacy = preg_match('/\.(sqlite3?|db)$/i', $path) === 1 ? $path : null;
-        $this->dir = rtrim($legacy !== null ? dirname($path) : $path, '/\\');
+        if ($legacy === null) {
+            $this->dir = rtrim($path, '/\\');
+        } else {
+            $this->dir = strtolower(basename($legacy)) === 'storage.sqlite' ? dirname($legacy) : (string) preg_replace('/\.(sqlite3?|db)$/i', '', $legacy);
+        }
         if (!is_dir($this->dir)) {
             if (file_exists($this->dir) || !@mkdir($this->dir, 0775, true) && !is_dir($this->dir)) {
                 throw new \RuntimeException("Could not create storage directory: {$this->dir}");
@@ -240,10 +246,16 @@ final class Storage
     /** @return array<string, mixed>|null null when the file is missing or unreadable */
     private function readJson(string $file): ?array
     {
-        $text = is_file($file) ? @file_get_contents($file) : false;
-        if ($text === false || $text === '') return null;
+        if (!is_file($file)) return null;
+        // Another process may be replacing the file at this instant (Windows refuses reads then): retry, never mistake it for "empty".
+        $text = false;
+        for ($attempt = 0; $attempt < 25 && ($text = @file_get_contents($file)) === false; $attempt++) {
+            usleep(20_000);
+        }
+        if ($text === false) throw new \RuntimeException("Could not read {$file}");
+        if ($text === '') return null;
         $data = json_decode($text, true);
-        if (!is_array($data)) throw new \RuntimeException("{$file} is not valid JSON. Fix or delete it (versions are kept in {$this->dir}).");
+        if (!is_array($data)) throw new \RuntimeException("{$file} is not valid JSON. Restore it from a backup, or delete it to start a fresh index (each version's data stays in {$this->dir}/versions).");
         return $data;
     }
 
@@ -253,9 +265,12 @@ final class Storage
         $text = json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR);
         $temp = $file . '.' . bin2hex(random_bytes(4)) . '.tmp';
         if (@file_put_contents($temp, $text) === false) throw new \RuntimeException("Could not write {$file}");
-        if (!@rename($temp, $file)) {
-            @unlink($temp);
-            throw new \RuntimeException("Could not replace {$file}");
+        for ($attempt = 0; !@rename($temp, $file); $attempt++) {
+            if ($attempt >= 25) {
+                @unlink($temp);
+                throw new \RuntimeException("Could not replace {$file} (is another program holding it open?)");
+            }
+            usleep(20_000); // Windows refuses to replace a file another process is reading at that instant
         }
     }
 

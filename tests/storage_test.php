@@ -94,6 +94,7 @@ file_put_contents($state . '/versions.json', json_encode(['next_id' => 4, 'versi
 
 // Storage: legacy path argument (".avp/storage.sqlite" from old configs) maps to the folder
 check((new Storage($state . '/storage.sqlite'))->directory() === $state, 'an old *.sqlite path maps to its folder');
+check((new Storage($root . '/data/my.sqlite'))->directory() === $root . '/data/my', 'a custom *.sqlite path gets its own folder, never its parent');
 
 // VersionService on the JSON store
 $projectDir = tempDir();
@@ -120,6 +121,7 @@ $service->delete($imported['id']);
 check($service->get('v2-renamed') === null && throwsException(fn () => $service->delete($imported['id']), OutOfBoundsException::class), 'delete removes a version once');
 
 // Cloud URL rules
+check(Cloud::isCleartext('http://192.168.0.5/x') && !Cloud::isCleartext('https://a.b/') && !Cloud::isCleartext('http://localhost:8080/') && !Cloud::isCleartext('http://127.0.0.1/'), 'plain http to another machine is flagged as cleartext');
 check(Cloud::apiBase('https://qa.erpsite.org.pk/test_avp/') === 'https://qa.erpsite.org.pk/test_avp/backend', 'a site URL gets /backend');
 check(Cloud::apiBase('https://x.test/app/backend/') === 'https://x.test/app/backend', 'a backend URL is kept');
 check(throwsException(fn () => Cloud::apiBase('ftp://x'), InvalidArgumentException::class), 'only http(s) cloud URLs are accepted');

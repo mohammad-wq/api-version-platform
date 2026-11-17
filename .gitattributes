@@ -1,9 +1,15 @@
 # Keep maintainer tooling out of `composer require` dist archives
 /scripts export-ignore
 /legacy export-ignore
+/.github export-ignore
 /REQUIREMENTS_AND_WORK.md export-ignore
 /.gitattributes export-ignore
 /.gitignore export-ignore
 
 /bin/avp text eol=lf
 /bin/avp-serve text eol=lf
+
+# The built UI is shipped byte-for-byte: never convert its line endings
+/resources/ui/** -text
+/resources/templates/*.md text eol=lf
+/client/src/templates/*.md text eol=lf

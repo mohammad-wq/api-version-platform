@@ -155,7 +155,7 @@ final class FrontMatter
         $title = $data['title'] ?? null;
         if (!is_string($title) || trim($title) === '') {
             $errors[] = self::error('FRONT_MATTER_MISSING_TITLE', 'The front-matter header needs a non-empty "title:".', [$data['title_line'] ?? 1, $data['title_line'] ?? 1]);
-        } elseif (mb_strlen($title) > 200) {
+        } elseif ((int) preg_match_all('/./us', $title) > 200) { // characters, without needing mbstring
             $errors[] = self::error('FRONT_MATTER_INVALID_VALUE', '"title" is too long (200 characters maximum).', [$data['title_line'], $data['title_line']]);
         }
         if (isset($data['version']) && !preg_match('/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,49}$/', (string) $data['version'])) {

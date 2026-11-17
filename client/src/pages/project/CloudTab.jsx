@@ -4,11 +4,14 @@ import { useAction, useAsync } from "../../hooks.js";
 import { EmptyState, ErrorBanner, Notice, SkeletonList, formatDate } from "../../components/ui.jsx";
 import { Icon } from "../../components/icons.jsx";
 
+const isCleartext = (url) => /^http:\/\/(?!(localhost|127\.0\.0\.1|\[::1\])([:/]|$))/i.test(String(url).trim());
+
 function SignIn({ status, onDone }) {
   const [url, setUrl] = useState(status.url ?? "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showUrl, setShowUrl] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const { busy, error, run } = useAction();
 
   const submit = async (event) => {
@@ -29,13 +32,25 @@ function SignIn({ status, onDone }) {
         </div>
       </div>
       <ErrorBanner error={error} />
+      {isCleartext(url) && <Notice kind="warn">This address uses http://, so your password would travel unencrypted. Use https:// if the server supports it.</Notice>}
       <label>
         <span className="label-line">Email</span>
         <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" required />
       </label>
       <label>
         <span className="label-line">Password</span>
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+        <div className="password-input-wrap">
+          <input type={showPassword ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" required />
+          <button
+            type="button"
+            className="icon-btn password-toggle"
+            onClick={() => setShowPassword((visible) => !visible)}
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            aria-pressed={showPassword}
+          >
+            <Icon name={showPassword ? "eyeOff" : "eye"} />
+          </button>
+        </div>
       </label>
       {showUrl ? (
         <label>
@@ -112,7 +127,7 @@ function Publish({ project, status, cloudProjects, onPublished }) {
       </div>
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
       {done && (
-        <Notice kind="success" onDismiss={() => setDone(null)}>
+        <Notice kind="ok" onDismiss={() => setDone(null)}>
           Published <strong>{done.version}</strong>{done.projectCreated ? " to a new cloud project" : ""}.{" "}
           {done.url && (
             <a href={done.url} target="_blank" rel="noreferrer">
@@ -198,7 +213,7 @@ function CloudProject({ cloudProject, onImported }) {
       {open && (
         <div className="stack" style={{ paddingLeft: 24 }}>
           <ErrorBanner error={error} onDismiss={() => setError(null)} />
-          {imported && <Notice kind="success" onDismiss={() => setImported(null)}>Imported as local version <strong>{imported}</strong>.</Notice>}
+          {imported && <Notice kind="ok" onDismiss={() => setImported(null)}>Imported as local version <strong>{imported}</strong>.</Notice>}
           {versions.loading && !versions.data && <SkeletonList rows={2} height={36} label="Loading cloud versions" />}
           <ErrorBanner error={versions.error} />
           {versions.data?.length === 0 && <p className="muted">No versions in this project yet.</p>}

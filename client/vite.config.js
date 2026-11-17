@@ -11,7 +11,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       '/backend': {
-        target: process.env.PHP_API_URL || 'http://192.168.0.111/test_avp/backend',
+        target: process.env.PHP_API_URL || 'http://localhost/test_avp/backend',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/backend/, ''),
       },

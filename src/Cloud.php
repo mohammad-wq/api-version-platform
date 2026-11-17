@@ -13,17 +13,18 @@ namespace Mohammad\ApiVersionPlatform;
 final class Cloud
 {
     public const DEFAULT_URL = 'https://qa.erpsite.org.pk/test_avp/';
-    private const TIMEOUT = 30;
+    private const TIMEOUT = 20;
 
     public function __construct(private string $stateDir, private string $defaultUrl = self::DEFAULT_URL)
     {
     }
 
-    /** @return array{connected: bool, url: string, user: array<string, mixed>|null} */
+    /** @return array{connected: bool, url: string, user: array<string, mixed>|null, insecure: bool} */
     public function status(): array
     {
         $state = $this->load();
-        return ['connected' => $state !== null && ($state['token'] ?? '') !== '', 'url' => $state['url'] ?? $this->defaultUrl, 'user' => $state['user'] ?? null];
+        $url = $state['url'] ?? $this->defaultUrl;
+        return ['connected' => $state !== null && ($state['token'] ?? '') !== '', 'url' => $url, 'user' => $state['user'] ?? null, 'insecure' => self::isCleartext($url)];
     }
 
     /** @return array{connected: bool, url: string, user: array<string, mixed>|null} */
@@ -62,6 +63,16 @@ final class Cloud
             'versions_count' => isset($p['versions_count']) ? (int) $p['versions_count'] : null,
             'owner' => $p['owner']['name'] ?? $p['owner_name'] ?? null,
         ], is_array($list) ? array_values(array_filter($list, 'is_array')) : []);
+    }
+
+    /** The signed-in user's cloud project with this name (case-insensitive, trimmed), or null. @return array<string, mixed>|null */
+    public function findProject(string $name): ?array
+    {
+        $wanted = strtolower(trim($name));
+        foreach ($this->projects() as $project) {
+            if (strtolower(trim((string) $project['name'])) === $wanted) return $project;
+        }
+        return null;
     }
 
     /** @return list<array<string, mixed>> Newest first, without the OpenAPI payload */
@@ -114,6 +125,14 @@ final class Cloud
 
     // HTTP
 
+    /** True for an http:// URL that is not this machine: a password sent there is readable on the network. */
+    public static function isCleartext(string $url): bool
+    {
+        if (!preg_match('#^http://([^/:\s]+)#i', trim($url), $m)) return false;
+        $host = strtolower($m[1]);
+        return !in_array($host, ['localhost', '127.0.0.1', '::1', '[::1]'], true);
+    }
+
     /** The backend URL for a site URL: the site's `backend` folder unless it already points at one. */
     public static function apiBase(string $url): string
     {
@@ -160,11 +179,26 @@ final class Cloud
             'method' => $method, 'header' => $headers, 'content' => $body, 'ignore_errors' => true,
             'follow_location' => 0, 'timeout' => self::TIMEOUT, 'protocol_version' => 1.1,
         ]]);
+        set_time_limit(60); // above the 20 s request timeout, so a slow server fails with a message, not a fatal error
+        $http_response_header = [];
+        $started = microtime(true);
         $text = @file_get_contents($url, false, $context, 0, 20 * 1024 * 1024);
+        $responseHeaders = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : $http_response_header;
         if ($text === false) {
             $reason = preg_replace('/^file_get_contents\([^)]*\):\s*/', '', error_get_last()['message'] ?? 'no response');
+            if (microtime(true) - $started >= self::TIMEOUT - 1) {
+                throw new CloudException('The cloud server at ' . $api . ' did not answer within ' . self::TIMEOUT . ' seconds. Check your connection and the cloud URL, then try again.');
+            }
             $hint = str_contains((string) $reason, 'SSL') ? ' (PHP may be missing a CA certificate bundle: set openssl.cafile in php.ini)' : '';
             throw new CloudException("Could not reach the cloud server at {$api}: {$reason}{$hint}");
+        }
+        $httpStatus = isset($responseHeaders[0]) && preg_match('#^HTTP/\S+\s+(\d{3})#', $responseHeaders[0], $m) ? (int) $m[1] : 0;
+        if ($httpStatus >= 300 && $httpStatus < 400) {
+            $location = '';
+            foreach ($responseHeaders as $line) {
+                if (stripos($line, 'location:') === 0) $location = trim(substr($line, 9));
+            }
+            throw new CloudException('The cloud server redirected to ' . ($location !== '' ? $location : 'another address') . '. Use that address as the cloud URL (for example the https:// version).');
         }
         $envelope = json_decode($text);
         if (!is_object($envelope)) {
