@@ -89,16 +89,6 @@ final class Cloud
         ], is_array($rows) ? array_values(array_filter($rows, 'is_array')) : []);
     }
 
-    /** @return array{id: int, version: string, note: ?string, openapi: object} */
-    public function version(int $versionId): array
-    {
-        $data = $this->authed('GET', '/versions/fetch/getVersion.php', ['id' => $versionId]);
-        $openapi = is_object($data) ? ($data->openapi ?? null) : null;
-        if (is_string($openapi)) $openapi = json_decode($openapi);
-        if (!is_object($openapi)) throw new CloudException('That cloud version has no OpenAPI document.', 404);
-        return ['id' => $versionId, 'version' => (string) ($data->version ?? ''), 'note' => isset($data->note) ? (string) $data->note : null, 'openapi' => $openapi];
-    }
-
     /** Creates a cloud project and returns its id. */
     public function createProject(string $name, string $description = ''): int
     {
@@ -175,6 +165,10 @@ final class Cloud
             $body = json_encode($json, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
         }
         $url = $api . $path . ($query ? '?' . http_build_query($query) : '');
+        $privateAddresses = array_values(array_filter(
+            [$url, $api, parse_url($api, PHP_URL_HOST)],
+            static fn ($value): bool => is_string($value) && $value !== '',
+        ));
         $context = stream_context_create(['http' => [
             'method' => $method, 'header' => $headers, 'content' => $body, 'ignore_errors' => true,
             'follow_location' => 0, 'timeout' => self::TIMEOUT, 'protocol_version' => 1.1,
@@ -186,19 +180,16 @@ final class Cloud
         $responseHeaders = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : $http_response_header;
         if ($text === false) {
             $reason = preg_replace('/^file_get_contents\([^)]*\):\s*/', '', error_get_last()['message'] ?? 'no response');
+            $reason = str_replace($privateAddresses, 'cloud server', (string) $reason);
             if (microtime(true) - $started >= self::TIMEOUT - 1) {
-                throw new CloudException('The cloud server at ' . $api . ' did not answer within ' . self::TIMEOUT . ' seconds. Check your connection and the cloud URL, then try again.');
+                throw new CloudException('The cloud server did not answer within ' . self::TIMEOUT . ' seconds. Check your connection, then try again.');
             }
             $hint = str_contains((string) $reason, 'SSL') ? ' (PHP may be missing a CA certificate bundle: set openssl.cafile in php.ini)' : '';
-            throw new CloudException("Could not reach the cloud server at {$api}: {$reason}{$hint}");
+            throw new CloudException("Could not reach the cloud server: {$reason}{$hint}");
         }
         $httpStatus = isset($responseHeaders[0]) && preg_match('#^HTTP/\S+\s+(\d{3})#', $responseHeaders[0], $m) ? (int) $m[1] : 0;
         if ($httpStatus >= 300 && $httpStatus < 400) {
-            $location = '';
-            foreach ($responseHeaders as $line) {
-                if (stripos($line, 'location:') === 0) $location = trim(substr($line, 9));
-            }
-            throw new CloudException('The cloud server redirected to ' . ($location !== '' ? $location : 'another address') . '. Use that address as the cloud URL (for example the https:// version).');
+            throw new CloudException('The cloud server redirected the request to another address. Check the configured cloud URL.');
         }
         $envelope = json_decode($text);
         if (!is_object($envelope)) {
@@ -206,7 +197,9 @@ final class Cloud
         }
         $code = (int) ($envelope->statusCode ?? 0);
         if ($code >= 400 || $code === 0) {
-            throw new CloudException((string) ($envelope->message ?? 'The cloud server rejected the request.'), $code >= 400 ? $code : 502);
+            $message = (string) ($envelope->message ?? 'The cloud server rejected the request.');
+            $message = str_replace($privateAddresses, 'cloud server', $message);
+            throw new CloudException($message, $code >= 400 ? $code : 502);
         }
         return $envelope->data ?? null;
     }

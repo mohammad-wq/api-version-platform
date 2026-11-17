@@ -145,6 +145,7 @@ export default function EnvironmentManager({ session, initialId, onClose, onSave
                       <span className="env-option-name">
                         {environmentLabel(environment)}
                         {environment.source === "readme" && <span className="env-tag">README</span>}
+                        {environment.insecure === true && <span className="env-tag" title="Requests to this environment accept any TLS certificate">TLS check off</span>}
                         {environment.id === active?.id && <span className="env-tag env-tag-active">Active</span>}
                       </span>
                       <span className={`env-option-url${invalid ? " invalid" : ""}`}>
@@ -232,6 +233,20 @@ export default function EnvironmentManager({ session, initialId, onClose, onSave
                   <small className="muted">Shown in the toolbar and shared with collaborators.</small>
                 )}
               </label>
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={editing.insecure === true}
+                  onChange={(event) => session.setInsecure(editing.id, event.target.checked)}
+                  disabled={busy}
+                />
+                <span>
+                  Skip TLS certificate check <small className="muted">for QA or internal servers with a self-signed certificate</small>
+                </span>
+              </label>
+              {editing.insecure === true && (
+                <Notice kind="warn">Requests to this environment accept any certificate. Only use this for servers you trust.</Notice>
+              )}
               {editing.source === "readme" && (
                 <Notice kind="info">This environment comes from the API specification. Save it to share it with collaborators.</Notice>
               )}

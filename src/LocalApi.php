@@ -45,10 +45,7 @@ final class LocalApi
             'GET /cloud/status' => fn () => $this->cloudStatus(),
             'POST /cloud/login' => fn () => $this->cloudLogin(),
             'POST /cloud/logout' => fn () => $this->cloudLogout(),
-            'GET /cloud/projects' => fn () => $this->cloud->projects(),
-            'GET /cloud/versions' => fn () => $this->cloud->versions((int) (is_string($_GET['project_id'] ?? null) ? $_GET['project_id'] : 0)),
             'POST /cloud/publish' => fn () => $this->cloudPublish(),
-            'POST /cloud/import' => fn () => $this->cloudImport(),
             'POST /runner/execute.php' => fn () => $this->execute(),
             'GET /request_history/fetch/getHistory.php' => fn () => $this->history(),
             'POST /request_history/remove/clearHistory.php' => fn () => $this->clearHistory(),
@@ -64,7 +61,7 @@ final class LocalApi
         try {
             $data = $handler();
             // A new version answers 201 whether it came from an import or from the README banner (as in npm).
-            $created = ($route === '/versions/modify/insertUpdateVersion.php' && empty($this->input()['id'])) || $route === '/local/readme/save' || $route === '/cloud/import';
+            $created = ($route === '/versions/modify/insertUpdateVersion.php' && empty($this->input()['id'])) || $route === '/local/readme/save';
             self::send($created ? 201 : 200, 'Success', $data);
         } catch (CloudException $e) {
             self::send($e->status, $e->getMessage());
@@ -233,6 +230,7 @@ final class LocalApi
             $seenUrls[strtolower($baseUrl)] = true;
             $entry = ['id' => $id, 'name' => $name, 'baseUrl' => $baseUrl];
             if (($environment['source'] ?? null) === 'readme') $entry['source'] = 'readme';
+            if (($environment['insecure'] ?? false) === true) $entry['insecure'] = true;
             $clean[] = $entry;
         }
         return $clean;
@@ -327,23 +325,21 @@ final class LocalApi
         return $result;
     }
 
-    // Cloud (the hosted platform): sign in, browse its projects, publish and import versions
+    // Cloud (the hosted platform): sign in and publish. The cloud's address is never sent to the UI.
 
-    /** @return array<string, mixed> */
+    /** @return array{connected: bool, user: array<string, mixed>|null} */
     private function cloudStatus(): array
     {
-        return $this->cloud->status() + [
-            'linkedProject' => ($id = (int) $this->storage->meta('cloud.project_id')) > 0
-                ? ['id' => $id, 'name' => $this->storage->meta('cloud.project_name'), 'url' => $this->storage->meta('cloud.project_url')] : null,
-        ];
+        $status = $this->cloud->status();
+        return ['connected' => $status['connected'], 'user' => $status['user']];
     }
 
-    /** @return array<string, mixed> */
+    /** @return array{connected: bool, user: array<string, mixed>|null} */
     private function cloudLogin(): array
     {
         $data = $this->input();
-        $status = $this->cloud->login(isset($data['url']) ? self::text($data, 'url') : null, self::text($data, 'email'), self::text($data, 'password'));
-        return $status + ['linkedProject' => $this->cloudStatus()['linkedProject']];
+        $this->cloud->login(null, self::text($data, 'email'), self::text($data, 'password'));
+        return $this->cloudStatus();
     }
 
     /** @return array{connected: bool} */
@@ -354,47 +350,20 @@ final class LocalApi
     }
 
     /**
-     * Publishes a local version to a cloud project: `project_id` of an existing one, or `new_project_name` to
-     * create it first. The project is remembered, so the next publish defaults to it.
+     * Publishes a local version to the cloud project that has this project's name (created when missing).
      *
      * @return array<string, mixed>
      */
     private function cloudPublish(): array
     {
         $data = $this->input();
-        $local = $this->versions->byId(is_scalar($data['version_id'] ?? null) ? (int) $data['version_id'] : 0);
-        if ($local === null) throw new \OutOfBoundsException('Version not found');
-        $projectId = is_scalar($data['project_id'] ?? null) ? (int) $data['project_id'] : 0;
-        $created = false;
-        if ($projectId <= 0) {
-            $name = trim(self::text($data, 'new_project_name'));
-            if ($name === '') throw new \InvalidArgumentException('Choose a cloud project or give a name for a new one.');
-            $projectId = $this->cloud->createProject($name, trim(self::text($data, 'description')));
-            $created = true;
-        }
-        $label = trim(self::text($data, 'version')) ?: (string) $local['label'];
-        $note = trim(self::text($data, 'note')) ?: ($local['note'] ?? null);
-        $published = $this->cloud->publish($projectId, $label, $note, $local['openapi']);
-        $name = $created ? trim(self::text($data, 'new_project_name')) : trim(self::text($data, 'project_name'));
-        $this->storage->setMeta('cloud.project_id', (string) $projectId);
-        if ($name !== '') $this->storage->setMeta('cloud.project_name', $name);
-        $this->storage->setMeta('cloud.project_url', rtrim((string) $this->cloud->status()['url'], '/') . '/projects/' . $projectId);
-        return $published + ['projectCreated' => $created, 'url' => $this->storage->meta('cloud.project_url')];
-    }
-
-    /** Copies a cloud version into the local project as an OpenAPI-only version. @return array<string, mixed> */
-    private function cloudImport(): array
-    {
-        $data = $this->input();
-        $remote = $this->cloud->version(is_scalar($data['version_id'] ?? null) ? (int) $data['version_id'] : 0);
-        $label = trim(self::text($data, 'label')) ?: $remote['version'];
-        $json = json_encode($remote['openapi'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-        $openapi = json_decode($json, true);
-        if (!is_array($openapi) || !isset($openapi['openapi']) || !is_array($openapi['paths'] ?? null)) {
-            throw new \InvalidArgumentException('The cloud version is not an OpenAPI document with "openapi" and "paths".');
-        }
-        $note = trim(self::text($data, 'note')) ?: ($remote['note'] ?? '');
-        return $this->versionRow($this->versions->createFromOpenApi($label, (string) $note, $openapi, $json), true);
+        $publisher = new Publisher($this->versions, $this->storage, $this->cloud, $this->projectRoot);
+        $result = $publisher->publishLocal(
+            is_scalar($data['version_id'] ?? null) ? (int) $data['version_id'] : 0,
+            isset($data['version']) ? self::text($data, 'version') : null,
+            isset($data['note']) ? self::text($data, 'note') : null,
+        );
+        return ['version' => $result['version'], 'project' => ['name' => $result['project']['name']], 'projectCreated' => $result['project']['created']];
     }
 
     // API testing
@@ -431,8 +400,9 @@ final class LocalApi
         $currentPayload = $payload;
         $blockedRedirect = null;
         // Redirects are followed here (at most 5) so a public API cannot bounce the request into a private address.
+        $failure = [];
         for ($hop = 0;; $hop++) {
-            $context = stream_context_create(['http' => [
+            $options = ['http' => [
                 'method' => $currentMethod,
                 'header' => $headerLines,
                 'content' => $currentPayload,
@@ -440,9 +410,24 @@ final class LocalApi
                 'follow_location' => 0,
                 'timeout' => 30,
                 'protocol_version' => 1.1,
-            ]]);
+            ]];
+            if ($this->skipsCertificateCheck($currentUrl)) {
+                // The user switched this on for this environment (a QA/internal server with a self-signed certificate).
+                $options['ssl'] = ['verify_peer' => false, 'verify_peer_name' => false, 'allow_self_signed' => true];
+            }
+            $context = stream_context_create($options);
             $http_response_header = [];
-            $responseBody = @file_get_contents($currentUrl, false, $context, 0, self::MAX_RESPONSE_BYTES);
+            // Keep every warning PHP raises: the last one alone ("Failed to open stream") hides the real reason.
+            $failure = [];
+            set_error_handler(static function (int $level, string $message) use (&$failure): bool {
+                $failure[] = trim(html_entity_decode((string) preg_replace('/^file_get_contents\([^)]*\):\s*/', '', $message), ENT_QUOTES));
+                return true;
+            });
+            try {
+                $responseBody = file_get_contents($currentUrl, false, $context, 0, self::MAX_RESPONSE_BYTES);
+            } finally {
+                restore_error_handler();
+            }
             $rawHeaders = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : $http_response_header;
             $hopStatus = isset($rawHeaders[0]) && preg_match('#^HTTP/\S+\s+(\d{3})#', $rawHeaders[0], $m) ? (int) $m[1] : null;
             $location = null;
@@ -469,8 +454,7 @@ final class LocalApi
             throw new \RuntimeException($message);
         }
         if ($responseBody === false && !$rawHeaders) {
-            $reason = error_get_last()['message'] ?? 'no response';
-            $message = 'Request execution failed: ' . preg_replace('/^file_get_contents\([^)]*\):\s*/', '', $reason);
+            $message = 'Request execution failed: ' . self::failureReason($failure, $currentUrl);
             $this->recordHistory($data, $method, $url, null, $durationMs);
             throw new \RuntimeException($message);
         }
@@ -494,6 +478,58 @@ final class LocalApi
         $this->recordHistory($data, $method, $url, $status, $durationMs);
 
         return ['status' => $status, 'headers' => $responseHeaders, 'body' => $parsedBody, 'duration_ms' => $durationMs];
+    }
+
+    /** True when the environment this URL belongs to has "Skip TLS certificate check" switched on. */
+    private function skipsCertificateCheck(string $url): bool
+    {
+        if (!preg_match('#^https://#i', $url)) return false;
+        $environments = json_decode($this->metadata('project.environments') ?? '[]', true);
+        $target = strtolower($url);
+        foreach (is_array($environments) ? $environments : [] as $environment) {
+            if (!is_array($environment) || ($environment['insecure'] ?? false) !== true) continue;
+            $base = strtolower(rtrim((string) ($environment['baseUrl'] ?? ''), '/'));
+            if ($base !== '' && str_starts_with($target, $base) && (strlen($target) === strlen($base) || in_array($target[strlen($base)], ['/', '?', '#'], true))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * What went wrong with a request that got no response, in words a person can act on.
+     *
+     * @param list<string> $warnings the PHP warnings raised while connecting
+     */
+    private static function failureReason(array $warnings, string $url): string
+    {
+        $text = implode(' ', $warnings);
+        $host = (string) (parse_url($url, PHP_URL_HOST) ?: $url);
+        if (stripos($text, 'allow_url_fopen') !== false) {
+            return "PHP's allow_url_fopen setting is off, so the tester cannot make requests. Set allow_url_fopen=On in php.ini and restart avp serve.";
+        }
+        if (preg_match('/Unable to find the wrapper\s*"https"/i', $text)) {
+            return "PHP's openssl extension is not enabled, so HTTPS requests cannot be made. Enable extension=openssl in php.ini and restart avp serve.";
+        }
+        if (preg_match('/certificate verify failed|SSL operation failed|Failed to enable crypto|unable to get local issuer|self[- ]signed|SSL: Handshake/i', $text)) {
+            $detail = 'certificate verify failed';
+            foreach ($warnings as $warning) {
+                // OpenSSL's own wording, e.g. "error:0A000086:SSL routines::certificate verify failed".
+                if (preg_match('/error:[0-9A-Fa-f]+:[^:\n]+::([^\n]+)/', $warning, $m)) {
+                    $detail = trim($m[1]);
+                    break;
+                }
+            }
+            $cafile = trim((string) ini_get('openssl.cafile'));
+            return "the TLS certificate of {$host} could not be verified ({$detail}). For a QA or internal server with a self-signed certificate, "
+                . 'open the environment settings and turn on "Skip TLS certificate check". If every HTTPS site fails like this, PHP\'s CA certificate file is missing or out of date'
+                . ($cafile !== '' ? " (openssl.cafile = {$cafile})" : ' (openssl.cafile is not set in php.ini)') . '.';
+        }
+        foreach ($warnings as $warning) {
+            // The generic closing warning says nothing; the one before it names the cause (DNS, refused, timed out, ...).
+            if ($warning !== '' && !preg_match('/^Failed to open stream: operation failed$/i', $warning)) return $warning;
+        }
+        return 'PHP could not open the request stream. Check the server URL, port, network access, and TLS certificate.';
     }
 
     /** True for loopback, link-local and private-range hosts (the ones a public API must not redirect a request to). */

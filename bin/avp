@@ -34,7 +34,7 @@ Usage:
   avp version show <label> [--format=json|openapi|markdown]
   avp check [--readme=PATH] [--json] [--ci]  list what the parser warns about (exit 1 with --ci if anything)
   avp migrate [--readme=PATH] [--write]  add the strict-format header to an older document
-  avp login [--url=URL] [--email=EMAIL]   sign in to the cloud platform (asks for what is missing)
+  avp login [--email=EMAIL]          sign in to the cloud platform (asks for what is missing)
   avp logout                         forget the cloud sign-in
   avp publish [label] [--note=TEXT] [--project=NAME]
                                      put a version on the cloud: signs in if needed, uses this project's name
@@ -106,16 +106,15 @@ function avpCloudLogin(Cloud $cloud, array $options, string $url): void
     $email = (string) ($options['email'] ?? getenv('AVP_CLOUD_EMAIL') ?: '');
     $password = (string) (getenv('AVP_CLOUD_PASSWORD') ?: '');
     $interactive = Prompt::interactive();
-    $target = $url !== '' ? $url : (string) $cloud->status()['url'];
     if ($email === '' || $password === '') {
-        fwrite(STDERR, "Sign in to {$target}\n");
+        fwrite(STDERR, "Sign in to the cloud\n");
     }
     for ($attempt = 1; $attempt <= 3; $attempt++) {
         if ($email === '') $email = Prompt::ask('Email');
         if ($password === '') $password = Prompt::secret('Password');
         try {
             $status = $cloud->login($url !== '' ? $url : null, $email, $password);
-            fwrite(STDOUT, 'Signed in to ' . $status['url'] . ' as ' . ($status['user']['name'] ?? $email) . ' (' . ($status['user']['email'] ?? $email) . ")\n");
+            fwrite(STDOUT, 'Signed in as ' . ($status['user']['name'] ?? $email) . ' (' . ($status['user']['email'] ?? $email) . ")\n");
             if ($status['insecure']) fwrite(STDERR, "Warning: this address uses http://, so the password was sent unencrypted.\n");
             return;
         } catch (CloudException $e) {
@@ -215,7 +214,7 @@ try {
         if ($command === 'logout') {
             $was = $cloud->status();
             $cloud->logout();
-            fwrite(STDOUT, $was['connected'] ? "Signed out of {$was['url']}.\n" : "You were not signed in.\n");
+            fwrite(STDOUT, $was['connected'] ? "Signed out.\n" : "You were not signed in.\n");
             exit(0);
         }
         if ($command === 'login') {
@@ -223,7 +222,7 @@ try {
             if ($status['connected'] && !isset($options['email']) && !isset($options['url'])) {
                 try {
                     $cloud->projects(); // proves the saved sign-in still works
-                    fwrite(STDOUT, 'Already signed in to ' . $status['url'] . ' as ' . ($status['user']['email'] ?? 'unknown') . ". Run `avp logout` first to switch accounts.\n");
+                    fwrite(STDOUT, 'Already signed in as ' . ($status['user']['email'] ?? 'unknown') . ". Run `avp logout` first to switch accounts.\n");
                     exit(0);
                 } catch (CloudException $e) {
                     fwrite(STDERR, $e->getMessage() . "\n");
@@ -246,17 +245,17 @@ try {
         }
         if (!$status['connected']) avpCloudLogin($cloud, $options, (string) ($options['url'] ?? ''));
         $name = trim((string) ($options['project'] ?? '')) !== '' ? trim((string) $options['project']) : $publisher->projectName();
-        fwrite(STDOUT, "Publishing project \"{$name}\" to " . $cloud->status()['url'] . "\n");
+        fwrite(STDOUT, "Publishing project \"{$name}\"\n");
         $label = $positionals[1] ?? null;
         $result = $publisher->publish($label, isset($options['note']) ? (string) $options['note'] : null, $name);
         if ($result['alreadyPublished']) {
             fwrite(STDOUT, "Nothing new to publish: {$result['version']} is already on the cloud project \"{$result['project']['name']}\".\n"
-                . "Edit your API document and run `avp publish` again, or name a version: avp publish v2.0.0\n{$result['url']}\n");
+                . "Edit your API document and run `avp publish` again, or name a version: avp publish v2.0.0\n");
             exit(0);
         }
         if ($result['localCreated']) fwrite(STDOUT, "Created local version {$result['version']} from {$readme}\n");
         if ($result['project']['created']) fwrite(STDOUT, "Created cloud project \"{$result['project']['name']}\"\n");
-        fwrite(STDOUT, "Published {$result['version']}\n{$result['url']}\n");
+        fwrite(STDOUT, "Published {$result['version']} to the cloud project \"{$result['project']['name']}\"\n");
         exit(0);
     }
 

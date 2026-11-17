@@ -189,6 +189,15 @@ export function useProjectEnvironments(project, servers, saveEnvironmentsApi) {
     updateEnvironment,
     renameEnvironment: (id, name) => updateEnvironment(id, { name }),
     setBaseUrl: (id, baseUrl) => updateEnvironment(id, { baseUrl }),
+    /** "Skip TLS certificate check" for QA or internal servers with a self-signed certificate. Off removes the key, so it is never saved as `false`. */
+    setInsecure: (id, insecure) =>
+      setEnvironments((items) =>
+        items.map((environment) => {
+          if (environment.id !== id) return environment;
+          const { insecure: _previous, ...rest } = environment;
+          return insecure ? { ...rest, insecure: true } : rest;
+        }),
+      ),
     updateActive: (patch) => active && updateEnvironment(active.id, patch),
     addEnvironment,
     duplicateEnvironment,
