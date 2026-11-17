@@ -23,7 +23,8 @@
         "test": [
             "@php tests/parser_test.php",
             "@php tests/storage_test.php",
-            "@php tests/publish_test.php"
+            "@php tests/publish_test.php",
+            "@php tests/hosted_smoke_test.php"
         ]
     },
     "config": {

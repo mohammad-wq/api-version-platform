@@ -6,6 +6,8 @@
  *
  *   php scripts/sync-hosted.php --backend=/path/to/php_backend
  *
+ * The parser runs on PHP 7.4 (the hosted server's version): scripts/hosted/polyfills.php supplies str_contains() and friends
+ * there. It is copied only to the hosted backend; the Composer package needs PHP 8.1 and does not ship it.
  * Writes <backend>/includes/parser/ (the namespaced classes) and <backend>/includes/markdownOpenApiParser.php,
  * which loads them and keeps the global `MarkdownOpenApiParser` class the hosted endpoints already call.
  * Run it again after changing anything in src/Parser/ or src/MarkdownOpenApiParser.php.
@@ -46,7 +48,15 @@ function copyTree(string $from, string $to): void
 foreach (glob($target . '/Parser/*.php') ?: [] as $old) unlink($old);
 copyTree($root . '/src/Parser', $target . '/Parser');
 copy($root . '/src/MarkdownOpenApiParser.php', $target . '/MarkdownOpenApiParser.php');
-copy($root . '/src/autoload.php', $target . '/autoload.php');
+// The hosted autoloader is the package's, with the polyfills loaded first (the loader below calls str_starts_with()).
+$autoload = str_replace("\r\n", "\n", (string) file_get_contents($root . '/src/autoload.php'));
+$marker = "declare(strict_types=1);\n\n";
+if (!str_contains($autoload, $marker)) {
+    fwrite(STDERR, "src/autoload.php no longer matches what this script expects; update scripts/sync-hosted.php\n");
+    exit(1);
+}
+file_put_contents($target . '/autoload.php', str_replace($marker, $marker . "require_once __DIR__ . '/polyfills.php';\n\n", $autoload));
+copy($root . '/scripts/hosted/polyfills.php', $target . '/polyfills.php');
 
 $loader = <<<'PHP'
 <?php

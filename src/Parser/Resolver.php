@@ -27,8 +27,11 @@ final class Resolver
     private array $publicTargets = [];
     private array $sectionsForTag = [];
 
-    public function __construct(private Diagnostics $diagnostics)
+    private Diagnostics $diagnostics;
+
+    public function __construct(Diagnostics $diagnostics)
     {
+        $this->diagnostics = $diagnostics;
     }
 
     /** @param list<array<string, mixed>> $sections from Lexer::lex() */
@@ -718,13 +721,13 @@ final class Resolver
                 }
             }
             if ($properties) {
+                $schema = ['type' => 'object', 'properties' => (object)$properties];
+                if ($required) {
+                    $schema['required'] = $required;
+                }
                 $endpoint['request']['body'] = [
                     'contentType' => 'multipart/form-data',
-                    'schema' => [
-                        'type' => 'object',
-                        'properties' => (object)$properties,
-                        ...($required ? ['required' => $required] : []),
-                    ],
+                    'schema' => $schema,
                 ];
             }
         }

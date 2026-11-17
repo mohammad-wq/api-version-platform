@@ -32,8 +32,12 @@ final class Diagnostics
     /** @var list<array<string, mixed>> */
     private array $errors = [];
 
-    public function __construct(public bool $strict = false)
+    /** True for a document with an `avp: 1` header: structural problems are listed as errors. */
+    public bool $strict;
+
+    public function __construct(bool $strict = false)
     {
+        $this->strict = $strict;
     }
 
     /** A warning; in a strict document, a code listed in STRICT_ERRORS becomes an error. */

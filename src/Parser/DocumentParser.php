@@ -119,7 +119,9 @@ final class DocumentParser
         $servers = [];
         foreach ($preset as $url) {
             $matches = array_values(array_filter($bodyServers, static fn(array $server): bool => $server['url'] === $url));
-            array_push($servers, ...($matches ?: [['url' => $url]]));
+            foreach ($matches ?: [['url' => $url]] as $server) {
+                $servers[] = $server;
+            }
         }
         foreach ($bodyServers as $server) {
             if (!in_array($server['url'], $preset, true)) {

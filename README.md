@@ -232,7 +232,7 @@ cp client/src/templates/API_README_TEMPLATE.md resources/templates/api-readme.md
 php scripts/lint.php && composer test
 ```
 
-The hosted multi-user backend (`php_backend`) uses the same parser. After changing `src/Parser/` or `src/MarkdownOpenApiParser.php`, run `php scripts/sync-hosted.php --backend=PATH/TO/php_backend` (it writes `includes/parser/` and the `includes/markdownOpenApiParser.php` loader; the parser runs on PHP 8.0+). The hosted client's template and `test-fixtures/API_README_TEMPLATE.openapi.json` are copies of this package's, so refresh them too. Release by tagging (`git tag v1.3.0 && git push --tags`); the version comes from the tag.
+The hosted multi-user backend (`php_backend`) uses the same parser. After changing `src/Parser/` or `src/MarkdownOpenApiParser.php`, run `php scripts/sync-hosted.php --backend=PATH/TO/php_backend` (it writes `includes/parser/` and the `includes/markdownOpenApiParser.php` loader; the parser runs on PHP 7.4+, because the hosted server does; `scripts/hosted/polyfills.php`, copied only to the hosted backend, supplies `str_contains()` and friends there, and CI runs the parser on 7.4). The hosted client's template and `test-fixtures/API_README_TEMPLATE.openapi.json` are copies of this package's, so refresh them too. Release by tagging (`git tag v1.3.0 && git push --tags`); the version comes from the tag.
 
 ## Changelog
 

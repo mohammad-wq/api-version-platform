@@ -14,8 +14,13 @@ final class OpenApiBuilder
      * @param array<string, mixed>|null $responseEnvelope the document's `{statusCode, data}` convention, when it showed one
      * @param array<string, mixed>|null $listEnvelope the `{items, pagination}` convention, when it showed one
      */
-    public function __construct(private ?array $responseEnvelope = null, private ?array $listEnvelope = null)
+    private ?array $responseEnvelope;
+    private ?array $listEnvelope;
+
+    public function __construct(?array $responseEnvelope = null, ?array $listEnvelope = null)
     {
+        $this->responseEnvelope = $responseEnvelope;
+        $this->listEnvelope = $listEnvelope;
     }
 
     /**
@@ -102,7 +107,8 @@ final class OpenApiBuilder
         return ['type' => 'string'];
     }
 
-    public static function queryExample(string $value): mixed
+    /** @return mixed */
+    public static function queryExample(string $value)
     {
         if (preg_match('/^-?\d+$/', $value)) return (int)$value;
         if (preg_match('/^-?\d+\.\d+$/', $value)) return (float)$value;
@@ -171,7 +177,8 @@ final class OpenApiBuilder
         return ['type' => 'string'];
     }
 
-    public static function decodeJsonExample(string $text): mixed
+    /** @return mixed */
+    public static function decodeJsonExample(string $text)
     {
         $clean = '';
         foreach (preg_split('/\r\n|\n|\r/', $text) as $line) {
@@ -207,7 +214,8 @@ final class OpenApiBuilder
         return json_last_error() === JSON_ERROR_NONE ? self::arraysKeepingEmptyObjects($decoded) : null;
     }
 
-    public static function inferSchema(mixed $value, array $comments = []): array
+    /** @param mixed $value */
+    public static function inferSchema($value, array $comments = []): array
     {
         if ($value instanceof \stdClass) {
             return ['type' => 'object', 'properties' => new \stdClass()];
@@ -278,7 +286,7 @@ final class OpenApiBuilder
 
     public static function reasonPhrase(int $status): string
     {
-        return match ($status) {
+        $phrases = [
             200 => 'OK',
             201 => 'Created',
             202 => 'Accepted',
@@ -289,8 +297,8 @@ final class OpenApiBuilder
             404 => 'Not Found',
             409 => 'Conflict',
             429 => 'Too Many Requests',
-            default => $status >= 500 ? 'Server Error' : 'Response',
-        };
+        ];
+        return $phrases[$status] ?? ($status >= 500 ? 'Server Error' : 'Response');
     }
 
     /** Every operation gets a unique operationId derived from its method and path (`get_widgets_list_php`, `_2` on collisions). */
@@ -346,13 +354,14 @@ final class OpenApiBuilder
         }
         if (isset($endpoint['request']['body'])) {
             $body = $endpoint['request']['body'];
+            $content = ['schema' => $body['schema']];
+            if (array_key_exists('example', $body)) {
+                $content['example'] = $body['example'];
+            }
             $operation['requestBody'] = [
                 'required' => true,
                 'content' => [
-                    $body['contentType'] => [
-                        'schema' => $body['schema'],
-                        ... (array_key_exists('example', $body) ? ['example' => $body['example']] : []),
-                    ],
+                    $body['contentType'] => $content,
                 ],
             ];
         }
@@ -391,7 +400,11 @@ final class OpenApiBuilder
      * Converts decoded JSON objects to PHP arrays, except empty objects: they stay `stdClass`, because an
      * empty PHP array would be written back as `[]` and turn every `{}` in an example into a list.
      */
-    private static function arraysKeepingEmptyObjects(mixed $value): mixed
+    /**
+     * @param mixed $value
+     * @return mixed
+     */
+    private static function arraysKeepingEmptyObjects($value)
     {
         if ($value instanceof \stdClass) {
             $fields = get_object_vars($value);
