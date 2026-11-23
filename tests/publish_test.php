@@ -52,7 +52,10 @@ function avp(string $cwd, array $args, array $env = [], string $stdin = ''): arr
     fwrite($pipes[0], $stdin);
     fclose($pipes[0]);
     $out = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
-    return [proc_close($process), $out];
+    $code = proc_close($process);
+    // The child may have created or deleted files this process stat()ed before; PHP would answer is_file() from its cache.
+    clearstatcache();
+    return [$code, $out];
 }
 
 // A free port for the mock cloud.

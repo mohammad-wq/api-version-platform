@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "node --test \"src/lib/*.test.js\"",
     "build:ftp": "vite build --mode ftp",
     "build:package": "vite build --mode package --outDir dist-package"
   },
