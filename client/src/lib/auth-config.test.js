@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { operationsForSpec } from "./openapi-endpoints.js";
-import { detectAuthConfig, expiryFrom, jwtExpiry, normalizeHeaderFormat, resolveAuthConfig, tokenStatus } from "./auth-config.js";
+import { detectAuthConfig, expiryFrom, jwtExpiry, normalizeHeaderFormat, resolveAuthConfig, tokenStatus, valueAtLoginPath } from "./auth-config.js";
 
 // The bundled template, pre-parsed into OpenAPI by the PHP parser (tests/parser_test.php guards
 // this fixture against drift, and PHP tests validate fresh template edits against it).
@@ -51,6 +51,38 @@ test("an API without a public login endpoint reports no login settings", () => {
   assert.equal(config.source, "none");
 });
 
+const loginBody = { content: { "application/json": { schema: { type: "object", properties: { identifier: { type: "string" }, password: { type: "string" } } }, example: { identifier: "10002315", password: "x" } } } };
+const tokenResponse = { 200: { description: "ok", content: { "application/json": { example: { data: { token: "abc", expires_in: 3600 } } } } } };
+const specWith = (paths) => ({ openapi: "3.0.3", paths, components: { securitySchemes: { BearerAuth: { type: "http", scheme: "bearer" } } } });
+const protectedLogin = { security: [{ BearerAuth: [] }], requestBody: loginBody, responses: tokenResponse };
+
+test("a login the README did not mark public is still found (a strict document treats every endpoint as protected)", () => {
+  const spec = specWith({ "/auth/login.php": { post: protectedLogin }, "/items": { get: { security: [{ BearerAuth: [] }], responses: { 200: { description: "ok" } } } } });
+  const config = detectAuthConfig(spec, endpointsOf(spec));
+  assert.equal(config.loginPath, "/auth/login.php");
+  assert.deepEqual(config.loginFields.map((field) => field.name), ["identifier", "password"]);
+});
+
+test("a public POST that takes a password is a login even when its path does not say so", () => {
+  const spec = specWith({ "/auth/identify.php": { post: { security: [], requestBody: loginBody, responses: tokenResponse } } });
+  const config = detectAuthConfig(spec, endpointsOf(spec));
+  assert.equal(config.loginPath, "/auth/identify.php");
+  assert.deepEqual(config.loginFields.map((field) => field.name), ["identifier", "password"]);
+  assert.equal(config.tokenPath, "data.token");
+});
+
+test("protected endpoints that merely take a password, and public ones without one, are not mistaken for a login", () => {
+  const spec = specWith({
+    "/users/create.php": { post: { security: [{ BearerAuth: [] }], requestBody: loginBody, responses: { 201: { description: "ok" } } } },
+    "/feedback.php": { post: { security: [], requestBody: { content: { "application/json": { schema: { type: "object", properties: { message: { type: "string" } } } } } }, responses: { 200: { description: "ok" } } } },
+    "/auth/change-password.php": { post: { security: [], requestBody: loginBody, responses: { 200: { description: "ok" } } } },
+    "/status.php": { get: { security: [], responses: { 200: { description: "ok" } } } },
+  });
+  const config = detectAuthConfig(spec, endpointsOf(spec));
+  assert.equal(config.loginPath, "");
+  assert.equal(config.source, "none");
+});
+
 test("an API key scheme sends the raw token in its header", () => {
   const spec = {
     openapi: "3.0.3",
@@ -91,4 +123,14 @@ test("token expiry comes from expires_in, epoch values, dates or the JWT exp cla
   assert.equal(tokenStatus({ token: "x", expiresAt: "2025-01-01T00:00:00Z" }, now), "expired");
   assert.equal(tokenStatus({ token: "x" }, now), "active");
   assert.equal(tokenStatus(null, now), "none");
+});
+
+test("a login token is found at its path, or inside the data envelope when the README documented only the payload", () => {
+  assert.equal(valueAtLoginPath({ data: { token: "abc" } }, "data.token"), "abc");
+  assert.equal(valueAtLoginPath({ token: "top", data: { token: "inner" } }, "token"), "top");
+  assert.equal(valueAtLoginPath({ statusCode: 200, data: { token: "abc", expires_in: 3600 } }, "token"), "abc");
+  assert.equal(valueAtLoginPath({ statusCode: 200, data: { expires_in: 3600 } }, "expires_in"), 3600);
+  assert.equal(valueAtLoginPath({ data: {} }, "token"), undefined);
+  assert.equal(valueAtLoginPath("plain text", "token"), undefined);
+  assert.equal(valueAtLoginPath(null, "token"), undefined);
 });

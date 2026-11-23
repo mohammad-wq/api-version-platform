@@ -124,7 +124,7 @@ export function ResponseView({ result }) {
         <code className="break">{request.url}</code>
       </div>
       <div className="response-body">
-        {response.truncated && <Notice kind="warn">The response was larger than 5 MB and has been cut off.</Notice>}
+        {response.truncated && <Notice kind="warn">The response was larger than the size limit and has been cut off.</Notice>}
         <div className="row space wrap">
           <div className="seg-tabs" role="group" aria-label="Response view">
             <button type="button" className={tab === "body" ? "active" : ""} aria-pressed={tab === "body"} onClick={() => setTab("body")}>
@@ -144,7 +144,7 @@ export function ResponseView({ result }) {
           </div>
         </div>
         {tab === "body" ? isBinary ? (
-          <p className="muted">Binary response ({formatBytes(response.bodySize ?? 0)}). Download the response to view it.</p>
+          <p className="muted">Binary response ({formatBytes(response.bodySize ?? 0)}). {response.downloadable ? "Download the response to view it." : "It is too large to show or download here."}</p>
         ) : isEmpty ? <p className="muted">(empty body)</p> : <JsonView value={body} maxHeight={480} searchable /> : <JsonView value={response.headers} maxHeight={480} />}
       </div>
     </section>

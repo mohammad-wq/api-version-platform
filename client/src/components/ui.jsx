@@ -246,6 +246,19 @@ export function JsonView({ value, maxHeight = 420, searchable = false, jumpOptio
 
 /** A full-width dialog. Esc (outside form fields) or a click on the backdrop closes it; the page behind does not scroll. */
 export function Modal({ children, onClose, className = "", backdropClassName = "", labelledBy }) {
+  const dialogRef = useRef(null);
+  // Move focus into the dialog when it opens and give it back to whatever opened it when it closes.
+  useEffect(() => {
+    const previous = document.activeElement;
+    const dialog = dialogRef.current;
+    if (dialog && !dialog.contains(document.activeElement)) {
+      const first = dialog.querySelector("[autofocus], input:not([type=hidden]), select, textarea, button, [href]");
+      (first ?? dialog).focus({ preventScroll: true });
+    }
+    return () => {
+      if (previous && typeof previous.focus === "function" && document.contains(previous)) previous.focus({ preventScroll: true });
+    };
+  }, []);
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === "Escape" && !/^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName)) onClose();
@@ -260,7 +273,7 @@ export function Modal({ children, onClose, className = "", backdropClassName = "
   }, [onClose]);
   return (
     <div className={`modal-backdrop${backdropClassName ? ` ${backdropClassName}` : ""}`} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <div className={`modal${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-labelledby={labelledBy}>
+      <div ref={dialogRef} tabIndex={-1} className={`modal${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-labelledby={labelledBy}>
         {children}
       </div>
     </div>

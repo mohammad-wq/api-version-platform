@@ -23,6 +23,7 @@ final class Diagnostics
         'DOT_SEGMENT_PATH',
         'INVALID_SERVER',
         'UNRECOGNIZED_COLUMN',
+        'TABLE_ROW_TOO_WIDE',
         'UNBOUND_JSON_BLOCK',
         'INVALID_JSON_BLOCK',
     ];

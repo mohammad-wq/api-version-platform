@@ -148,7 +148,12 @@ try {
     if ($command === 'init') {
         $result = Server::init($projectRoot, isset($options['force']), isset($options['readme']) ? (string) $options['readme'] : null);
         $document = $result['document'];
-        fwrite(STDOUT, "Created {$result['config']}\n");
+        foreach ($result['warnings'] as $warning) fwrite(STDERR, $warning . "\n");
+        fwrite(STDOUT, match ($result['configAction']) {
+            'unchanged' => basename($result['config']) . " already exists; left unchanged.\n",
+            'updated' => "Updated the 'readme' setting in {$result['config']}; every other setting is unchanged.\n",
+            default => "Created {$result['config']}\n",
+        });
         fwrite(STDOUT, "Local state goes in {$result['state']} (ignored by git automatically)\n");
         fwrite(STDOUT, $result['documentCreated']
             ? "Created {$document} from the template: replace the example endpoints with your own.\n"
@@ -231,7 +236,17 @@ try {
             avpCloudLogin($cloud, $options, (string) ($options['url'] ?? ''));
             exit(0);
         }
-        // publish
+        // publish: refuse what the cloud would reject before signing in or creating any local version
+        if (isset($options['note']) && Publisher::charCount(trim((string) $options['note'])) > Publisher::MAX_NOTE_LENGTH) {
+            avpFail('--note is limited to ' . Publisher::MAX_NOTE_LENGTH . ' characters (the cloud limit).');
+        }
+        if (isset($options['project'])) {
+            $projectOption = trim((string) $options['project']);
+            if ($projectOption === '') avpFail('--project needs a project name, e.g. --project "Shop API".');
+            if (Publisher::charCount($projectOption) > Publisher::MAX_PROJECT_NAME_LENGTH) {
+                avpFail('--project is limited to ' . Publisher::MAX_PROJECT_NAME_LENGTH . ' characters (the cloud limit).');
+            }
+        }
         $publisher = new Publisher($service, $storage, $cloud, $configRoot);
         $status = $cloud->status();
         if ($status['connected']) {
@@ -290,7 +305,7 @@ try {
             }
         }
         // Detect the duplicate before the INSERT so the CLI speaks the same message the API answers with.
-        if ($service->get($label) !== null) throw new RuntimeException("A version with label {$label} already exists.");
+        if ($service->get($label) !== null) throw new RuntimeException("Version '{$label}' already exists.");
         $result = $service->create($label, (string) ($options['note'] ?? ''), isset($options['allow-unchanged']));
         avpJson($result); exit(0);
     }

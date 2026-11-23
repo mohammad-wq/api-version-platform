@@ -92,14 +92,24 @@ function endpointForUrl(endpoints, loginUrl, method) {
   return candidates.find((endpoint) => !method || endpoint.method === method) ?? candidates[0] ?? null;
 }
 
-/** Scores public endpoints and returns the one that most looks like a login call, or null. */
+/**
+ * Scores the endpoints and returns the one that most looks like a login call, or null.
+ *
+ * A login never needs a token, but a README often leaves it unmarked (a strict document treats every endpoint as
+ * protected unless it says `Auth: false`). So a login-looking path whose body takes a password still counts, and a
+ * public POST that takes a password counts even when its path does not say "login".
+ */
 export function findLoginEndpoint(spec, endpoints) {
   let best = null;
   let bestScore = 0;
   for (const endpoint of endpoints ?? []) {
-    if (endpoint.requiresAuth || NOT_LOGIN_PATH.test(endpoint.path)) continue;
+    if (NOT_LOGIN_PATH.test(endpoint.path)) continue;
+    const loginPath = LOGIN_PATH.test(endpoint.path);
+    const takesPassword = endpoint.method === "POST" && loginFieldsOf(endpoint).some((field) => field.secret);
+    if (endpoint.requiresAuth && !(loginPath && takesPassword)) continue;
     let score = 0;
-    if (LOGIN_PATH.test(endpoint.path)) score += 10;
+    if (loginPath) score += 10;
+    if (takesPassword) score += 10;
     if (LOGIN_SUMMARY.test(`${endpoint.summary ?? ""} ${endpoint.operationId ?? ""}`)) score += 3;
     if (endpoint.method === "POST") score += 3;
     if (responseKeyPath(spec, endpoint, TOKEN_KEY)) score += 6;
@@ -197,6 +207,24 @@ export function resolveAuthConfig(detected, overrides) {
     headerFormat: normalizeHeaderFormat(pick("headerFormat")),
     source: "custom",
   };
+}
+
+/** The value at a dotted path such as "data.token" or "items[0].id" (undefined when any step is missing). */
+export function valueAtPath(value, path) {
+  return String(path ?? "")
+    .replace(/\[(?:'([^']+)'|"([^"]+)"|(\d+))\]/g, ".$1$2$3")
+    .split(".")
+    .filter(Boolean)
+    .reduce((current, key) => current?.[key], value);
+}
+
+/**
+ * A value in a login response. A README's `Response data:` block documents only what is inside the
+ * `{statusCode, message, data}` envelope, so the detected path ("token") is tried on the body first and then inside `data`.
+ */
+export function valueAtLoginPath(body, path) {
+  const found = valueAtPath(body, path);
+  return found != null ? found : valueAtPath(body?.data, path);
 }
 
 /** Reads the `exp` claim of a JWT as an ISO date, or null. */

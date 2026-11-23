@@ -237,7 +237,7 @@ export default function DiffView({ project, comparison, onClose, reloadProject }
         <Badge kind="danger">{counts.removed} removed</Badge>
         <Badge kind="warn">{counts.changed} changed</Badge>
         <Badge kind="neutral">{counts.unchanged} unchanged</Badge>
-        {diff.summary.breakingChanges > 0 ? <Badge kind="danger">{diff.summary.breakingChanges} breaking changes</Badge> : <Badge kind="ok">No breaking changes</Badge>}
+        {diff.summary.breakingChanges > 0 ? <Badge kind="danger">{diff.summary.breakingChanges} breaking {diff.summary.breakingChanges === 1 ? "change" : "changes"}</Badge> : <Badge kind="ok">No breaking changes</Badge>}
       </div>
 
       {diff.identical && <Notice kind="info">These versions are identical. APIs are still available below for testing.</Notice>}

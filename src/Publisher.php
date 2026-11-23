@@ -15,6 +15,10 @@ namespace Mohammad\ApiVersionPlatform;
  */
 final class Publisher
 {
+    /** The cloud stores notes and project names in varchar(255) columns. */
+    public const MAX_NOTE_LENGTH = 255;
+    public const MAX_PROJECT_NAME_LENGTH = 255;
+
     private VersionService $versions;
     private Storage $storage;
     private Cloud $cloud;
@@ -44,6 +48,7 @@ final class Publisher
      */
     public function publish(?string $label, ?string $note, ?string $projectName = null): array
     {
+        self::assertCloudLimits($note, $projectName);
         $name = $this->targetName($projectName);
         $label = $label !== null && trim($label) !== '' ? VersionService::label($label) : null;
 
@@ -93,6 +98,7 @@ final class Publisher
      */
     public function publishLocal(int $versionId, ?string $label, ?string $note, ?string $projectName = null): array
     {
+        self::assertCloudLimits($note, $projectName);
         $local = $this->versions->byId($versionId);
         if ($local === null) throw new \OutOfBoundsException('Version not found');
         $name = $this->targetName($projectName);
@@ -107,6 +113,33 @@ final class Publisher
             }
         }
         return $this->send($project, $name, $local, $version, $note);
+    }
+
+    /** Characters, not bytes (the cloud columns count characters). */
+    public static function charCount(string $value): int
+    {
+        return preg_match('//u', $value) === 1 ? (int) preg_match_all('/./us', $value) : strlen($value);
+    }
+
+    /**
+     * Refuses a note or project name the cloud would reject, before any local version is created or anything is sent.
+     *
+     * @throws \InvalidArgumentException
+     */
+    public static function assertCloudLimits(?string $note, ?string $projectName): void
+    {
+        if ($note !== null && self::charCount(trim($note)) > self::MAX_NOTE_LENGTH) {
+            throw new \InvalidArgumentException('The note is limited to ' . self::MAX_NOTE_LENGTH . ' characters (the cloud limit).');
+        }
+        if ($projectName !== null) {
+            $trimmed = trim($projectName);
+            if ($trimmed === '') {
+                throw new \InvalidArgumentException('The project name cannot be blank.');
+            }
+            if (self::charCount($trimmed) > self::MAX_PROJECT_NAME_LENGTH) {
+                throw new \InvalidArgumentException('The project name is limited to ' . self::MAX_PROJECT_NAME_LENGTH . ' characters (the cloud limit).');
+            }
+        }
     }
 
     private function targetName(?string $projectName): string

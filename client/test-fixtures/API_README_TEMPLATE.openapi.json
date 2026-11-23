@@ -1,7 +1,7 @@
 {
     "openapi": "3.0.3",
     "info": {
-        "title": "Example Service API",
+        "title": "Your project name",
         "version": "1.0.0",
         "description": "A short description of your API. It becomes the description of the generated OpenAPI document."
     },

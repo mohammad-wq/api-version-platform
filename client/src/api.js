@@ -4,7 +4,7 @@ import { API_BASE } from "./base.js";
 import { diffSpecs } from "./lib/openapi_diff.js";
 import { validateOpenApiDocument } from "./lib/openapi_import.js";
 import { baseUrlError } from "./lib/base-url.js";
-import { expiryFrom, jwtExpiry, normalizeHeaderFormat } from "./lib/auth-config.js";
+import { expiryFrom, jwtExpiry, normalizeHeaderFormat, valueAtLoginPath } from "./lib/auth-config.js";
 import { operationsForSpec } from "./lib/openapi-endpoints.js";
 import { suggestNextVersion } from "./lib/version-number.js";
 
@@ -211,8 +211,7 @@ async function runRequest(project, method, path, query, headers, body, token, sa
     requestHeaders[project.headerName] = authHeader(project, token);
   }
   const url = projectUrl(project, path, query);
-  // Every API call is recorded (signed-in ones too); the server redacts secrets before storing it.
-  // Only the sign-in request itself (saveHistory false) is left out.
+  // Every API call is recorded, sign-in calls included; the server redacts secrets before storing it.
   const historySaved = Boolean(saveHistory);
   const result = await post("/runner/execute.php", {
     project_id: project.id,
@@ -229,21 +228,16 @@ async function runRequest(project, method, path, query, headers, body, token, sa
     response: {
       status: numberOrNull(response.status),
       headers: response.headers ?? {},
-      body: response.body ?? null,
+      // A binary body arrives as base64 (the response viewer offers it as a download); text bodies stay as parsed JSON or text.
+      body: response.binary ? "" : response.body ?? null,
+      ...(response.binary ? { bodyBase64: String(response.body_base64 ?? ""), downloadable: Boolean(response.body_base64) } : {}),
       durationMs: numberOrNull(response.duration_ms) ?? 0,
-      bodySize: new Blob([typeof response.body === "string" ? response.body : JSON.stringify(response.body ?? "")]).size,
+      bodySize: numberOrNull(response.size) ?? new Blob([typeof response.body === "string" ? response.body : JSON.stringify(response.body ?? "")]).size,
+      truncated: Boolean(response.truncated),
     },
     specVersion: { versionNumber: project.latestVersionNumber ?? "latest" },
     historySaved: Boolean(historySaved),
   };
-}
-
-function valueAtPath(value, path) {
-  return String(path ?? "")
-    .replace(/\[(?:'([^']+)'|"([^"]+)"|(\d+))\]/g, ".$1$2$3")
-    .split(".")
-    .filter(Boolean)
-    .reduce((current, key) => current?.[key], value);
 }
 
 const postVersion = (payload) => post("/versions/modify/insertUpdateVersion.php", payload);
@@ -397,17 +391,20 @@ export const api = {
       { "Content-Type": "application/json" },
       body,
       null,
-      false,
+      true,
     );
     if (response.response.status == null || response.response.status < 200 || response.response.status >= 300) {
       throw new ApiError(response.response.status ?? 502, `API login failed (${response.response.status ?? "no response"}).`, "LOGIN_FAILED", response.response.body);
     }
+    // A README's `Response data:` block documents only what is inside the `{statusCode, message, data}` envelope, so the
+    // detected path ("token") is looked up at the top level first and then inside `data`.
+    const payload = response.response.body;
     const tokenPath = project.tokenPath || "data.token";
-    const token = valueAtPath(response.response.body, tokenPath);
+    const token = valueAtLoginPath(payload, tokenPath);
     if (typeof token !== "string" || !token) {
       throw new ApiError(502, `No token was found at "${tokenPath}" in the login response.`, "TOKEN_NOT_FOUND", response.response.body);
     }
-    const expiresAt = (project.expiresPath && expiryFrom(valueAtPath(response.response.body, project.expiresPath))) || jwtExpiry(token);
+    const expiresAt = (project.expiresPath && expiryFrom(valueAtLoginPath(payload, project.expiresPath))) || jwtExpiry(token);
     return { token, expiresAt };
   },
   executeRequest: (project, payload, apiToken) => {
@@ -436,5 +433,7 @@ export const api = {
       project_id: projectId,
       limit: Math.min(Number(limit) || 100, 100),
     })).map(normalizeHistory),
+  getRequestHistoryEntry: async (id, projectId) =>
+    normalizeHistory(await get("/request_history/fetch/getHistory.php", { id, project_id: projectId })),
   clearRequestHistory: (projectId) => post("/request_history/remove/clearHistory.php", { project_id: projectId }),
 };

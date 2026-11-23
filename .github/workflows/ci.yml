@@ -17,6 +17,7 @@ jobs:
       - run: php tests/parser_test.php
       - run: php tests/storage_test.php
       - run: php tests/publish_test.php
+      - run: php tests/tester_test.php
 
   # The hosted web backend runs PHP 7.4: the parser must keep working there.
   php74:

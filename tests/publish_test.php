@@ -78,7 +78,7 @@ check($code === 1 && str_contains($out, 'there is no terminal to type in') && st
 [$code, $out] = avp($project, ['login'], [], "test@test.com\nwrong-password\n");
 check($code === 1 && str_contains($out, 'Invalid email or password'), 'login with a wrong password fails', $out);
 [$code, $out] = avp($project, ['login'], [], "test@test.com\ntest12345\n");
-check($code === 0 && str_contains($out, 'Signed in to') && str_contains($out, 'Tester'), 'login with piped email and password works', $out);
+check($code === 0 && str_contains($out, 'Signed in as') && str_contains($out, 'Tester'), 'login with piped email and password works', $out);
 check(is_file($project . '/.avp/cloud.json'), 'the sign-in is saved in .avp/cloud.json');
 [$code, $out] = avp($project, ['login']);
 check($code === 0 && str_contains($out, 'Already signed in'), 'login when already signed in says so', $out);
@@ -111,10 +111,21 @@ check($code === 0 && str_contains($out, 'Created cloud project "Other API"') && 
 $state = json_decode((string) file_get_contents($stateFile), true);
 check(count($state['projects']) === 2, 'two cloud projects now exist');
 
+// what the cloud would reject is refused up front: nothing is created locally, nothing is sent
+$versionsBefore = (string) @file_get_contents($project . '/.avp/versions.json');
+[$code, $out] = avp($project, ['publish', 'v9.9.9', '--note', str_repeat('n', 256)]);
+check($code === 1 && str_contains($out, '--note is limited to 255 characters (the cloud limit).') && (string) @file_get_contents($project . '/.avp/versions.json') === $versionsBefore, 'a note over 255 characters is refused before anything is created', $out);
+[$code, $out] = avp($project, ['publish', 'v9.9.9', '--project', '   ']);
+check($code === 1 && str_contains($out, '--project needs a project name') && (string) @file_get_contents($project . '/.avp/versions.json') === $versionsBefore, 'a blank --project is refused instead of silently using the folder name', $out);
+[$code, $out] = avp($project, ['publish', 'v9.9.9', '--project', str_repeat('P', 256)]);
+check($code === 1 && str_contains($out, '--project is limited to 255 characters') && (string) @file_get_contents($project . '/.avp/versions.json') === $versionsBefore, 'a project name over 255 characters is refused', $out);
+[$code, $out] = avp($project, ['publish', 'v9.9.9', '--note', str_repeat('n', 255)]);
+check($code === 0 && str_contains($out, 'Published v9.9.9'), 'a 255-character note is still accepted', $out);
+
 // expired sign-in: asks again
 file_put_contents($project . '/.avp/cloud.json', json_encode(['url' => $cloudUrl, 'token' => 'stale', 'user' => null]));
 [$code, $out] = avp($project, ['publish'], [], "test@test.com\ntest12345\n");
-check($code === 0 && str_contains($out, 'sign-in expired') && str_contains($out, 'Signed in to'), 'an expired sign-in asks to sign in again', $out);
+check($code === 0 && str_contains($out, 'sign-in expired') && str_contains($out, 'Signed in as'), 'an expired sign-in asks to sign in again', $out);
 
 // logout, then environment credentials (no prompt)
 [$code, $out] = avp($project, ['logout']);
@@ -122,7 +133,7 @@ check($code === 0 && str_contains($out, 'Signed out') && !is_file($project . '/.
 [$code, $out] = avp($project, ['logout']);
 check($code === 0 && str_contains($out, 'not signed in'), 'logout when signed out is harmless', $out);
 [$code, $out] = avp($project, ['publish'], $good);
-check($code === 0 && str_contains($out, 'Signed in to'), 'AVP_CLOUD_EMAIL / AVP_CLOUD_PASSWORD sign in without a prompt', $out);
+check($code === 0 && str_contains($out, 'Signed in as'), 'AVP_CLOUD_EMAIL / AVP_CLOUD_PASSWORD sign in without a prompt', $out);
 
 // the automatic label skips names the cloud project already has
 foreach (['.avp/versions', '.avp/versions.json'] as $gone) is_dir("{$project}/{$gone}") ? removeTree("{$project}/{$gone}") : @unlink("{$project}/{$gone}");

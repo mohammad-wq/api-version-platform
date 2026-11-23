@@ -274,8 +274,18 @@ final class Resolver
                 $table['lines'],
             );
         }
+        $columnCount = count($table['header']);
         foreach ($table['rows'] as $row) {
             $cells = $row['cells'];
+            // An unescaped `|` inside a cell (a path such as `list.php?status=a|b`) splits it in two and shifts every
+            // later column: Auth and Description would be read from the wrong cells without a word.
+            if (count($cells) > $columnCount && array_filter(array_slice($cells, $columnCount), static fn ($cell): bool => $cell !== '')) {
+                $this->warn(
+                    'TABLE_ROW_TOO_WIDE',
+                    'Row has more cells than the table has columns, so its columns are shifted. Write \\| for a literal pipe inside a cell: ' . Lexer::stripInline(implode(' | ', $cells)),
+                    [$row['line'], $row['line']]
+                );
+            }
             $methods = $this->parseMethods($cells[$columns['method']] ?? '');
             $targetCell = $cells[$columns['endpoint']] ?? '';
             $target = Lexer::codeSpans($targetCell)[0] ?? Lexer::stripInline($targetCell);
@@ -421,9 +431,19 @@ final class Resolver
             }
             [$path, $query, $unresolved] = $this->resolvePath(trim($match[2]), $section, $sections);
             foreach ($methods as $method) {
-                $existing = $this->findHeadingTarget($method, $path, $section, $sections);
+                $existing = $this->findHeadingTarget($method, $path, trim($match[2]), $section, $sections);
                 if ($existing !== null) {
                     $this->endpoints[$existing]['detailSectionIds'][] = $section['id'];
+                    // An exact path match is the normal "table row + detail section" pairing. A shorter relative
+                    // path that was matched by its tail is said out loud, so a heading is never absorbed silently.
+                    if (self::pathOnly($this->endpoints[$existing]['path']) !== self::pathOnly($path)) {
+                        $this->warn(
+                            'HEADING_MERGED',
+                            "Heading \"{$method} {$match[2]}\" was attached to {$method} {$this->endpoints[$existing]['path']}; write the full path in the heading if it is a different endpoint.",
+                            $section['heading']['lines'],
+                            $this->endpoints[$existing]
+                        );
+                    }
                     continue;
                 }
                 $endpoint = $this->newEndpoint($method, $path, $section, $section['heading']['lines'][0], '');
@@ -444,23 +464,45 @@ final class Resolver
         }
     }
 
-    private function findHeadingTarget(string $method, string $path, array $section, array $sections): ?int
+    /** The path without any query string or fragment. */
+    private static function pathOnly(string $path): string
     {
-        $matches = [];
+        $only = parse_url($path, PHP_URL_PATH);
+        return is_string($only) && $only !== '' ? $only : $path;
+    }
+
+    /**
+     * The endpoint a `### METHOD path` heading adds detail to, or null when the heading is a new endpoint.
+     *
+     * It joins an existing endpoint only when the resolved paths are identical, or when the heading wrote a
+     * RELATIVE path (`items.php`, `modify/save.php`) that is the tail of that endpoint's path at a `/` boundary.
+     * Matching on the last segment alone merged `GET /users/{id}` and `GET /orders/{id}` into one endpoint.
+     * An absolute path that differs is always a separate endpoint.
+     */
+    private function findHeadingTarget(string $method, string $path, string $target, array $section, array $sections): ?int
+    {
+        $wanted = self::pathOnly($path);
+        $isRelative = $target !== '' && $target[0] !== '/' && !preg_match('#^[A-Za-z][A-Za-z0-9+.-]*://#', $target);
+        $tail = $isRelative ? ltrim(self::pathOnly($target), '/') : '';
+        $exact = null;
+        $tails = [];
         foreach ($this->endpoints as $index => $endpoint) {
-            if ($endpoint['method'] !== $method || basename(parse_url($endpoint['path'], PHP_URL_PATH) ?: '') !== basename(parse_url($path, PHP_URL_PATH) ?: '')) {
+            if ($endpoint['method'] !== $method || !$this->isWithin($endpoint['sectionId'], $section['parent'], $sections)) {
                 continue;
             }
-            if ($this->isWithin($endpoint['sectionId'], $section['parent'], $sections)) {
-                $matches[] = $index;
+            $have = self::pathOnly($endpoint['path']);
+            if ($have === $wanted) {
+                if ($exact === null || $endpoint['path'] === $path) {
+                    $exact = $index;
+                }
+            } elseif ($tail !== '' && str_ends_with($have, '/' . $tail)) {
+                $tails[] = $index;
             }
         }
-        foreach ($matches as $index) {
-            if ($this->endpoints[$index]['path'] === $path) {
-                return $index;
-            }
+        if ($exact !== null) {
+            return $exact;
         }
-        return count($matches) === 1 ? $matches[0] : null;
+        return count($tails) === 1 ? $tails[0] : null;
     }
 
     private function bindEndpointDetails(array $sections): void

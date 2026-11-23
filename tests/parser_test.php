@@ -438,6 +438,27 @@ foreach ($cases as $name => [$header, $code]) {
 $unterminated = parse("---\navp: 1\ntitle: T\n\n# Title\n");
 check(errorCodes($unterminated)[0] === 'FRONT_MATTER_UNTERMINATED' && $unterminated['errors'][0]['lines'][0] === 1, 'An unterminated header is an error that points at line 1.');
 
+// ================================================================ headings that share a last path segment
+
+// `### GET /users/{id}` and `### GET /orders/{id}` used to collapse into one endpoint (only the last segment was compared).
+$shopHeadings = "### GET `/users/{id}`\nUser by id.\n\n### GET `/orders/{id}`\nOrder by id.\n\n### GET `/products/{id}`\nProduct by id.\n\n### DELETE `/users/{id}`\nDelete a user.\n\n### DELETE `/orders/{id}`\nDelete an order.\n";
+$shopStrict = parse(strictDoc($shopHeadings));
+check($shopStrict['statistics']['endpoints'] === 5 && $shopStrict['warnings'] === [] && $shopStrict['errors'] === [], 'Five headings that end in {id} are five endpoints with no warnings (strict document).');
+$shopOps = array_map(static fn (array $op): string => "{$op[1]} {$op[0]}", operationsOfDoc($shopStrict['openapi']));
+sort($shopOps);
+check($shopOps === ['DELETE /orders/{id}', 'DELETE /users/{id}', 'GET /orders/{id}', 'GET /products/{id}', 'GET /users/{id}'], 'Each heading keeps its own path and method.');
+$shopLegacy = parse("# Shop\n\n" . str_replace('`', '', $shopHeadings));
+check($shopLegacy['statistics']['endpoints'] === 5 && codesOf($shopLegacy) === [], 'The same five headings work in a legacy document.');
+$sameTail = parse(strictDoc("### GET `/users/list`\nA.\n\n### GET `/orders/list`\nB.\n"));
+check($sameTail['statistics']['endpoints'] === 2, 'Headings /users/list and /orders/list are two endpoints.');
+// A table row plus a detail heading for the same endpoint must still be one endpoint.
+$tableAndHeading = parse(strictDoc("\n## Notes — `notes/`\n\n| Method | Endpoint | Auth | Description |\n|---|---|---|---|\n| GET | `fetch/getNotes.php` | true | List notes. |\n\n### GET `fetch/getNotes.php`\nDetail text for the list call.\n"));
+check($tableAndHeading['statistics']['endpoints'] === 1 && $tableAndHeading['warnings'] === [], 'A table row and its detail heading with the same relative path stay one endpoint, with no warning.');
+$tailHeading = parse(strictDoc("\n## Notes — `notes/`\n\n| Method | Endpoint | Auth | Description |\n|---|---|---|---|\n| GET | `fetch/getNotes.php` | true | List notes. |\n\n### GET `getNotes.php`\nDetail text.\n"));
+check($tailHeading['statistics']['endpoints'] === 1 && codesOf($tailHeading) === ['HEADING_MERGED'], 'A heading that only matches the tail of a table path joins it and says so with HEADING_MERGED.');
+$absoluteDiffers = parse(strictDoc("\n## Notes — `notes/`\n\n| Method | Endpoint | Auth | Description |\n|---|---|---|---|\n| GET | `fetch/getNotes.php` | true | List notes. |\n\n### GET `/archive/getNotes.php`\nAn absolute path that differs is another endpoint.\n"));
+check($absoluteDiffers['statistics']['endpoints'] === 2, 'An absolute heading path that differs from the table row is a separate endpoint.');
+
 // ================================================================ strict documents
 
 $ok = parse(strictDoc(USERS_TABLE));
@@ -467,6 +488,7 @@ $problems = [
     'DUPLICATE_ENDPOINT' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n| GET | `list.php` | b |\n",
     'UNRESOLVED_PREFIX' => "\n## No prefix here\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n",
     'UNRECOGNIZED_COLUMN' => "\n## U — `u/`\n\n| Method | Endpoint | Notes | Description |\n|---|---|---|---|\n| GET | `list.php` | n | a |\n",
+    'TABLE_ROW_TOO_WIDE' => "\n## U — `u/`\n\n| Method | Endpoint | Auth | Description |\n|---|---|---|---|\n| GET | `list.php?status=a|b` | true | List |\n",
     'INVALID_SERVER' => "\nServers: ftp://nope\n\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n",
     'NO_ENDPOINTS_FOUND' => "\nJust text.\n",
     'UNBOUND_JSON_BLOCK' => "\n## U — `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `list.php` | a |\n\nSome text\n\n```json\n{\"a\": 1}\n```\n",
@@ -481,6 +503,8 @@ foreach ($problems as $code => $body) {
     $lenientCode = in_array($code, ['INVALID_METHOD', 'MISSING_ENDPOINT_PATH'], true) ? 'INVALID_TABLE_ROW' : $code; // the lenient parser keeps its single row code
     check(in_array($lenientCode, codesOf($lenientResult), true) && $lenientResult['errors'] === [], "Lenient (no header): the same document only warns {$lenientCode}.");
 }
+$escapedPipe = parse(strictDoc("\n## U — `u/`\n\n| Method | Endpoint | Auth | Description |\n|---|---|---|---|\n| GET | `list.php?status=a\\|b` | true | List |\n| GET | `other.php` | true | Other | |\n"));
+check($escapedPipe['errors'] === [] && !in_array('TABLE_ROW_TOO_WIDE', codesOf($escapedPipe), true), 'An escaped pipe, or an empty extra trailing cell, is not a too-wide row.');
 $notUtf8 = parse(strictDoc(USERS_TABLE) . "caf\xE9\n");
 check(in_array('NOT_UTF8', errorCodes($notUtf8), true), 'Strict: a non-UTF-8 document is an error.');
 

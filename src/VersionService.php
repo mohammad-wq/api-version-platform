@@ -194,7 +194,12 @@ final class VersionService
         if ($label === '') {
             throw new \InvalidArgumentException('Version label is required.');
         }
-        $length = preg_match('//u', $label) === 1 ? (int) preg_match_all('/./us', $label) : strlen($label);
+        // Control, format and unassigned characters (newlines, BEL, byte-order marks, invalid UTF-8) break `avp version list`
+        // output and render as boxes in the UI. Letters, digits, spaces, dots, slashes and emoji are all fine.
+        if (preg_match('//u', $label) !== 1 || preg_match('/\p{C}/u', $label) === 1) {
+            throw new \InvalidArgumentException('Version label contains invalid characters.');
+        }
+        $length = (int) preg_match_all('/./us', $label);
         if ($length > self::MAX_LABEL_LENGTH) {
             throw new \InvalidArgumentException('Version label is too long (' . self::MAX_LABEL_LENGTH . ' characters maximum).');
         }

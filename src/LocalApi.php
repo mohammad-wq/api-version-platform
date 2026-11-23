@@ -15,6 +15,12 @@ final class LocalApi
 {
     public const PROJECT_ID = 1;
     private const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+    /** Seconds the tester waits for an API: per request, and for a request with its redirects. */
+    private const HOP_TIMEOUT = 30;
+    private const TOTAL_TIMEOUT = 110;
+    /** Shorter on Windows, where PHP's built-in server cannot run workers and every other request waits meanwhile. */
+    private const WINDOWS_HOP_TIMEOUT = 15;
+    private const WINDOWS_TOTAL_TIMEOUT = 25;
     /** Same limit as the UI's import check, so no README is parsed that the UI would refuse anyway. */
     private const MAX_PARSE_BYTES = 5 * 1024 * 1024;
 
@@ -143,7 +149,8 @@ final class LocalApi
             throw new \InvalidArgumentException('markdown is required');
         }
         if (strlen($markdown) > self::MAX_PARSE_BYTES) {
-            throw new \InvalidArgumentException('README Markdown is too large (5 MB maximum).');
+            // 413 like the hosted backend, so the UI shows one "too large" answer in both products.
+            self::send(413, 'README Markdown is too large (5 MB maximum).');
         }
         $result = MarkdownOpenApiParser::parse($markdown);
         return $result;
@@ -376,11 +383,16 @@ final class LocalApi
         $url = trim(self::text($data, 'url'));
         $headers = is_array($data['headers'] ?? null) ? $data['headers'] : [];
         $body = $data['body'] ?? null;
+        // A request that is refused still goes into the History (with the reason), so the list shows every attempt.
         if ($url === '' || !filter_var($url, FILTER_VALIDATE_URL) || !preg_match('#^https?://#i', $url)) {
-            throw new \InvalidArgumentException('Invalid target URL');
+            $this->refuse($data, $method, $url, 'Invalid target URL');
         }
         if (!in_array($method, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'], true)) {
-            throw new \InvalidArgumentException("Unsupported HTTP method: {$method}");
+            $this->refuse($data, $method, $url, "Unsupported HTTP method: {$method}");
+        }
+        if (self::isOwnAddress($url)) {
+            // PHP's built-in server answers one request at a time on Windows: calling itself would wait for itself until the timeout.
+            $this->refuse($data, $method, $url, "The tester cannot call this tool's own address.");
         }
 
         $headerLines = [];
@@ -392,8 +404,16 @@ final class LocalApi
             if (!preg_match('/[\r\n]/', $name . $value)) $headerLines[] = "{$name}: {$value}";
         }
         $payload = $body === null ? null : (is_array($body) ? json_encode($body, JSON_UNESCAPED_SLASHES) : (is_bool($body) ? json_encode($body) : (string) $body));
-        set_time_limit(120); // longer than the per-hop 30 s timeout, so a slow API fails with a message, not a fatal error
+        // Windows has no PHP_CLI_SERVER_WORKERS: the whole UI waits while this request runs, so it gets a short budget there.
+        $windows = PHP_OS_FAMILY === 'Windows';
+        $perHopSeconds = $windows ? self::WINDOWS_HOP_TIMEOUT : self::HOP_TIMEOUT;
+        $budgetSeconds = $windows ? self::WINDOWS_TOTAL_TIMEOUT : self::TOTAL_TIMEOUT;
+        set_time_limit($budgetSeconds + 15); // above the budget, so a slow API fails with a message, not a fatal error
         $start = microtime(true);
+        $deadline = $start + $budgetSeconds;
+        $hopTimeout = (float) $perHopSeconds;
+        $hopStarted = $start;
+        $truncated = false;
         $startedPrivate = self::isPrivateHost((string) parse_url($url, PHP_URL_HOST));
         $currentUrl = $url;
         $currentMethod = $method;
@@ -402,13 +422,15 @@ final class LocalApi
         // Redirects are followed here (at most 5) so a public API cannot bounce the request into a private address.
         $failure = [];
         for ($hop = 0;; $hop++) {
+            $hopTimeout = max(1.0, min((float) $perHopSeconds, $deadline - microtime(true)));
+            $hopStarted = microtime(true);
             $options = ['http' => [
                 'method' => $currentMethod,
                 'header' => $headerLines,
                 'content' => $currentPayload,
                 'ignore_errors' => true,
                 'follow_location' => 0,
-                'timeout' => 30,
+                'timeout' => $hopTimeout,
                 'protocol_version' => 1.1,
             ]];
             if ($this->skipsCertificateCheck($currentUrl)) {
@@ -424,9 +446,14 @@ final class LocalApi
                 return true;
             });
             try {
-                $responseBody = file_get_contents($currentUrl, false, $context, 0, self::MAX_RESPONSE_BYTES);
+                // One byte more than the cap, so a body that is exactly the cap is not reported as cut.
+                $responseBody = file_get_contents($currentUrl, false, $context, 0, self::MAX_RESPONSE_BYTES + 1);
             } finally {
                 restore_error_handler();
+            }
+            $truncated = is_string($responseBody) && strlen($responseBody) > self::MAX_RESPONSE_BYTES;
+            if ($truncated) {
+                $responseBody = substr($responseBody, 0, self::MAX_RESPONSE_BYTES);
             }
             $rawHeaders = function_exists('http_get_last_response_headers') ? (http_get_last_response_headers() ?? []) : $http_response_header;
             $hopStatus = isset($rawHeaders[0]) && preg_match('#^HTTP/\S+\s+(\d{3})#', $rawHeaders[0], $m) ? (int) $m[1] : null;
@@ -449,13 +476,19 @@ final class LocalApi
         }
         $durationMs = (int) round((microtime(true) - $start) * 1000);
         if ($blockedRedirect !== null) {
-            $message = "Request blocked: the server redirected to a private address ({$blockedRedirect}).";
-            $this->recordHistory($data, $method, $url, null, $durationMs);
+            $message = "Request blocked: the server redirected to a private address (" . self::redactUrl($blockedRedirect) . ').';
+            $this->recordHistory($data, $method, $url, null, $durationMs, $message);
             throw new \RuntimeException($message);
         }
         if ($responseBody === false && !$rawHeaders) {
-            $message = 'Request execution failed: ' . self::failureReason($failure, $currentUrl);
-            $this->recordHistory($data, $method, $url, null, $durationMs);
+            if (microtime(true) - $hopStarted >= $hopTimeout - 0.5) {
+                $seconds = (int) round($hopTimeout);
+                $message = "Request execution failed: the API did not answer within {$seconds} seconds."
+                    . ($windows ? ' Windows runs one request at a time, so the tester waits at most ' . self::WINDOWS_TOTAL_TIMEOUT . ' seconds.' : '');
+            } else {
+                $message = 'Request execution failed: ' . self::failureReason($failure, $currentUrl);
+            }
+            $this->recordHistory($data, $method, $url, null, $durationMs, $message);
             throw new \RuntimeException($message);
         }
 
@@ -477,7 +510,32 @@ final class LocalApi
 
         $this->recordHistory($data, $method, $url, $status, $durationMs);
 
-        return ['status' => $status, 'headers' => $responseHeaders, 'body' => $parsedBody, 'duration_ms' => $durationMs];
+        // `binary` is always false here (invalid UTF-8 is substituted when the response is encoded); the hosted runner uses it for raw bytes.
+        return ['status' => $status, 'headers' => $responseHeaders, 'body' => $parsedBody, 'duration_ms' => $durationMs, 'truncated' => $truncated, 'size' => strlen($responseBody), 'binary' => false];
+    }
+
+    /** Records the refused request in the History, then answers 400. @param array<string, mixed> $data @return never */
+    private function refuse(array $data, string $method, string $url, string $message): void
+    {
+        $this->recordHistory($data, $method, $url, null, 0, $message);
+        throw new \InvalidArgumentException($message);
+    }
+
+    /** True when $url points at this very server (same port and a loopback or the bound host). */
+    private static function isOwnAddress(string $url): bool
+    {
+        $parts = parse_url($url);
+        if (!is_array($parts) || !isset($parts['host'])) return false;
+        $port = (int) ($parts['port'] ?? (strtolower((string) ($parts['scheme'] ?? 'http')) === 'https' ? 443 : 80));
+        $ownPort = (int) ($_SERVER['SERVER_PORT'] ?? 0);
+        if ($ownPort === 0 || $port !== $ownPort) return false;
+        $host = strtolower(trim((string) $parts['host'], '[]'));
+        $own = ['localhost', '::1'];
+        foreach ([getenv('AVP_SERVER_HOST') ?: '', (string) ($_SERVER['SERVER_NAME'] ?? ''), preg_replace('/:\d+$/', '', (string) ($_SERVER['HTTP_HOST'] ?? ''))] as $name) {
+            $name = strtolower(trim((string) $name, '[]'));
+            if ($name !== '' && $name !== '0.0.0.0') $own[] = $name;
+        }
+        return in_array($host, $own, true) || str_starts_with($host, '127.');
     }
 
     /** True when the environment this URL belongs to has "Skip TLS certificate check" switched on. */
@@ -564,14 +622,16 @@ final class LocalApi
      *
      * @param array<string, mixed> $data
      */
-    private function recordHistory(array $data, string $method, string $url, ?int $status, int $durationMs): void
+    private function recordHistory(array $data, string $method, string $url, ?int $status, int $durationMs, ?string $error = null): void
     {
         if (empty($data['save_history'])) return;
         try {
             $this->storage->addHistory([
                 'environment' => trim(is_scalar($data['environment'] ?? null) ? (string) $data['environment'] : '') ?: null,
-                'method' => $method, 'url' => self::redactUrl($url),
+                // A refused request can carry any text as its URL or method: keep the row small and printable.
+                'method' => substr($method, 0, 16), 'url' => substr(self::redactUrl($url), 0, 2000),
                 'response_status' => $status, 'duration_ms' => $durationMs, 'created_at' => gmdate('c'),
+                'error' => $error !== null && $error !== '' ? substr($error, 0, 500) : null,
             ]);
         } catch (\Throwable $e) {
             error_log('Could not save the request history: ' . $e->getMessage());
@@ -590,11 +650,28 @@ final class LocalApi
         return substr($url, 0, (int) strpos($url, '?')) . '?' . $pairs . (is_string($fragment) ? '#' . $fragment : '');
     }
 
-    /** @return list<array<string, mixed>> */
+    /**
+     * The request list (newest first), or with `?id=N` the one entry with every stored field.
+     * Rows from before the `error` field existed read as error null.
+     *
+     * @return array<string, mixed>|list<array<string, mixed>>
+     */
     private function history(): array
     {
+        $normalize = static fn (array $row): array => [
+            'id' => (int) $row['id'], 'method' => $row['method'] ?? '', 'url' => $row['url'] ?? '',
+            'response_status' => $row['response_status'] ?? null, 'duration_ms' => $row['duration_ms'] ?? null,
+            'created_at' => $row['created_at'] ?? null, 'error' => $row['error'] ?? null, 'has_detail' => true,
+        ];
+        if (isset($_GET['id'])) {
+            $wanted = is_string($_GET['id']) && ctype_digit($_GET['id']) ? (int) $_GET['id'] : 0;
+            foreach ($this->storage->history(1000) as $row) {
+                if ((int) $row['id'] === $wanted) return $normalize($row) + ['environment' => $row['environment'] ?? null];
+            }
+            throw new \OutOfBoundsException('Request not found');
+        }
         $limit = max(1, min(100, (int) ($_GET['limit'] ?? 100)));
-        return array_map(static fn (array $row): array => array_intersect_key($row, array_flip(['id', 'method', 'url', 'response_status', 'duration_ms', 'created_at'])), $this->storage->history($limit));
+        return array_map($normalize, $this->storage->history($limit));
     }
 
     /** @return array{project_id: int} */

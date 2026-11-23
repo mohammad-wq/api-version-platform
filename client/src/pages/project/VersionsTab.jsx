@@ -4,6 +4,7 @@ import { useAction, useAsync, usePersistentState } from "../../hooks.js";
 import { Avatar, Badge, EmptyState, ErrorBanner, JsonView, Modal, Notice, Skeleton, SkeletonList, formatBytes, formatDate, timeAgo } from "../../components/ui.jsx";
 import { Icon } from "../../components/icons.jsx";
 import { FindBar, findShortcut, useFind } from "../../components/find.jsx";
+import ParserWarnings from "../../components/ParserWarnings.jsx";
 import DiffView from "../../components/DiffView.jsx";
 import { MAX_OPENAPI_IMPORT_BYTES, prepareOpenApiImport, validateOpenApiDocument } from "../../lib/openapi_import.js";
 import { isVersionTaken, matchesVersionTemplate, suggestNextVersion } from "../../lib/version-number.js";
@@ -22,23 +23,6 @@ function jumpOptionsOf(spec) {
 }
 
 const ACCEPTED = /\.(?:json|md|markdown)$/i;
-
-function ParserWarnings({ warnings }) {
-  if (!Array.isArray(warnings) || warnings.length === 0) return null;
-  return (
-    <div className="import-warnings" aria-label="README parser warnings">
-      <h5>README parser warnings <span className="muted">({warnings.length})</span></h5>
-      {warnings.map((warning, index) => (
-        <Notice kind="warn" key={`${warning.code}-${warning.lines?.[0] ?? index}`}>
-          <strong>{warning.code}</strong>
-          {warning.lines && <> · lines {warning.lines[0]}–{warning.lines[1]}</>}
-          {warning.endpoint && <> · <code>{warning.endpoint}</code></>}
-          <br />{warning.message}
-        </Notice>
-      ))}
-    </div>
-  );
-}
 
 /** Click-to-browse or drag-and-drop target for Markdown or OpenAPI JSON files. */
 function Dropzone({ file, onFile, inputRef }) {
@@ -178,7 +162,9 @@ function ImportPanel({ projectId, versions = [], versionsLoaded = true, onImport
     const preparedImport = await run(async () => {
       if (mode === "file" && file.size > MAX_OPENAPI_IMPORT_BYTES) throw new Error("Input must not exceed 5 MB.");
       const source = mode === "file" ? await file.text() : text;
-      return prepareOpenApiImport(source, { filename: mode === "file" ? file.name : "", parseMarkdown: api.parseReadme });
+      const importPrepared = await prepareOpenApiImport(source, { filename: mode === "file" ? file.name : "", parseMarkdown: api.parseReadme });
+      // The Markdown is kept so the warnings panel can suggest a header that uses the document's own title.
+      return { ...importPrepared, source: importPrepared.sourceType === "markdown" ? source : "" };
     });
     if (preparedImport) {
       setPrepared(preparedImport);
@@ -221,7 +207,7 @@ function ImportPanel({ projectId, versions = [], versionsLoaded = true, onImport
   };
 
   return (
-    <form className="card import-card" onSubmit={prepared ? save : prepare}>
+    <form className={`card import-card${prepared ? " has-prepared-import" : ""}`} onSubmit={prepared ? save : prepare}>
       <div className="card-head">
         <div>
           <h3>Add a new version</h3>
@@ -304,7 +290,7 @@ function ImportPanel({ projectId, versions = [], versionsLoaded = true, onImport
               <Icon name="arrowLeft" /> Back to source
             </button>
           </div>
-          <ParserWarnings warnings={prepared.warnings} />
+          <ParserWarnings warnings={prepared.warnings} source={prepared.source} />
           <label>
             <span className="label-line">OpenAPI JSON <small className="muted">{reviewText.length ? `${reviewText.split("\n").length} lines` : ""}</small></span>
             <textarea className="spec-editor" rows={24} value={reviewText} onChange={(event) => setReviewText(event.target.value)} spellCheck={false} />
@@ -325,10 +311,13 @@ function ImportPanel({ projectId, versions = [], versionsLoaded = true, onImport
             <> (README parser found {result.parse.statistics.endpoints} operations in {result.parse.statistics.tags} groups)</>
           )}
           .
+          {result.duplicate_of && (
+            <> It has the same content as <strong>{result.duplicate_of.version}</strong>, so nothing changed since that version.</>
+          )}
         </Notice>
       )}
 
-      <div className="form-actions">
+      <div className={`form-actions${prepared ? " import-save-dock" : ""}`}>
         <button className="btn btn-primary" disabled={busy || (prepared ? reviewErrors.length > 0 || duplicateNumber || !effectiveNumber : !ready)}>
           <Icon name={prepared ? "check" : "bolt"} /> {busy ? (prepared ? "Saving…" : "Parsing…") : prepared ? "Validate and save version" : "Parse and review"}
         </button>
@@ -609,8 +598,17 @@ export default function VersionsTab({ project, can, reloadProject, revision }) {
   }, [versions.data, indexById, from, to]);
 
   // The open JSON viewer is remembered across reloads; close it once its version is gone.
+  // A version saved "as new" is opened before the refreshed list contains it, so it is exempt until the list catches up.
+  const justCreated = useRef(null);
+  const [createdNotice, setCreatedNotice] = useState(null);
   useEffect(() => {
-    if (versions.data && viewing != null && !indexById.has(String(viewing))) setViewing(null);
+    if (!versions.data || viewing == null) return;
+    const id = String(viewing);
+    if (indexById.has(id)) {
+      if (justCreated.current === id) justCreated.current = null;
+      return;
+    }
+    if (justCreated.current !== id) setViewing(null);
   }, [versions.data, indexById, viewing, setViewing]);
   // Likewise a shown comparison loses its meaning when either side is deleted.
   useEffect(() => {
@@ -696,6 +694,7 @@ export default function VersionsTab({ project, can, reloadProject, revision }) {
         )}
       </div>
 
+      {viewing && createdNotice && createdNotice.id === String(viewing) && <Notice kind="ok">{createdNotice.text}</Notice>}
       {viewing && (
         <VersionViewer
           key={viewing}
@@ -707,15 +706,23 @@ export default function VersionsTab({ project, can, reloadProject, revision }) {
             // The JSON editor saves outside the import form, so the project (its sidebar version
             // count and latest-version label) must be refreshed too.
             reloadProject();
-            if (asNew) setViewing(result.id);
+            if (asNew) {
+              justCreated.current = String(result.id);
+              setCreatedNotice({ id: String(result.id), text: `Saved as new version ${result.versionNumber ?? ''}.`.replace(' .', '.') });
+              setViewing(result.id);
+            }
           }}
           onDeleted={() => {
             setViewing(null);
+            setCreatedNotice(null);
             setComparison(null);
             versions.reload();
             reloadProject();
           }}
-          onClose={() => setViewing(null)}
+          onClose={() => {
+            setViewing(null);
+            setCreatedNotice(null);
+          }}
         />
       )}
 

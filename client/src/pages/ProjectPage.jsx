@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
-import { useAsync } from "../hooks.js";
+import { setDraftScope, useAsync } from "../hooks.js";
 import { Avatar, ErrorBanner, Skeleton, useCrumb, usePopover } from "../components/ui.jsx";
 import { ProjectDetailsForm } from "../components/ApiAuthSettings.jsx";
 import { Icon } from "../components/icons.jsx";
@@ -138,6 +138,9 @@ export default function ProjectPage() {
   }
 
   const data = project.data;
+  // Saved form drafts (login body, environment choice, ...) belong to this project. Every project is "1" locally, so without
+  // this a draft saved for one project would appear in another that is served from the same address.
+  setDraftScope(String(data.createdAt ?? data.id));
   // One implicit local user who can do everything.
   const can = () => true;
   const counts = data._count ?? { versions: data.versions.length };

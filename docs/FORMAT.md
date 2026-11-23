@@ -90,7 +90,9 @@ Structural problems (the lenient parser only warns about these):
 | `INVALID_TABLE_ROW` | Any other table row that is not an endpoint (for example an empty row). |
 | `UNRESOLVED_PREFIX` | A relative path in a section whose heading has no `` `prefix/` `` and no `Base path:`. |
 | `DUPLICATE_ENDPOINT` | The same method and path is documented twice. |
+| `HEADING_MERGED` | A `### METHOD path` heading matched only the tail of a table row's path (for example `getNotes.php` for `/notes/fetch/getNotes.php`) and was attached to it as detail. Write the full path in the heading if it is a different endpoint. This is a warning in every document, never an error. |
 | `UNRECOGNIZED_COLUMN` | A table column the parser does not read (it would silently drop the data). |
+| `TABLE_ROW_TOO_WIDE` | An endpoint-table row has more cells than the table has columns (usually an unescaped pipe character inside a cell, which shifts the later columns); escape a literal pipe with a backslash. |
 | `UNRESOLVED_PUBLIC_ENDPOINT` | "Every endpoint except `x` requires ..." names an endpoint that does not exist. |
 | `UNBOUND_JSON_BLOCK` | A JSON block has no `Request`/`Response`/`Success` label, or a request body is given for `GET`/`HEAD`. |
 | `INVALID_JSON_BLOCK` | A labelled JSON block cannot be read. |

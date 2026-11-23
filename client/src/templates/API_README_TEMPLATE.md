@@ -1,13 +1,21 @@
 ---
+# KEEP THIS HEADER at the very top (the block between the two --- lines).
+# Why: it sets your project title and version, and turns on strict checking, so problems such as
+# repeated endpoints or broken JSON examples count as errors in "avp check" (and in CI).
+# Without it the file still imports, but the checks are looser.
+#
+# Required. Leave this as 1. It tells the importer this README uses the checked format.
 avp: 1
-title: Example Service API
+# Required. Your project title: the name shown at the top of your API docs.
+title: Your project name
+# Optional. Your project version, for example 1.0.0.
 version: 1.0.0
-# Optional: description, auth (bearer | none), servers (list of base URLs)
+# Optional extras: description, auth (bearer | none), servers (a list of base URLs).
 ---
 
 <!--
 HOW TO USE (this comment is ignored by the parser)
-1. Replace the example title, text and endpoints with your own. Keep the header at the top.
+1. Replace "Your project name", the example text and the endpoints with your own. Keep the header at the top.
 2. One "## Section — `prefix/`" per module. The prefix (in backticks, after an em dash) is added to
    every relative endpoint in the section.
 3. Document endpoints with a table (Method | Endpoint | Auth | Description) or a heading such as
@@ -20,7 +28,7 @@ HOW TO USE (this comment is ignored by the parser)
 7. Run `avp check` to see warnings; each one points at a line to look at. Never put real secrets in examples.
 -->
 
-# Example Service API
+# Your project name
 
 A short description of your API. It becomes the description of the generated OpenAPI document.
 

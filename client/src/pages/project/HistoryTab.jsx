@@ -1,13 +1,18 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { api } from "../../api.js";
 import { useAction, useAsync } from "../../hooks.js";
 import { EmptyState, ErrorBanner, MethodBadge, SkeletonList, StatusBadge, formatDate, timeAgo } from "../../components/ui.jsx";
 import { Icon } from "../../components/icons.jsx";
+import HistoryDetail from "../../components/HistoryDetail.jsx";
+
+/** The URL without its scheme and host, as shown in the Path column. */
+const pathOf = (url) => String(url ?? "").replace(/^https?:\/\/[^/]+/, "");
 
 export default function HistoryTab({ project }) {
   const history = useAsync(() => api.getRequestHistory(project.id, 100), [project.id]);
   const { busy, error, setError, run } = useAction();
   const [confirmClear, setConfirmClear] = useState(false);
+  const [openId, setOpenId] = useState(null);
   const all = history.data ?? [];
 
   const clear = async () => {
@@ -68,9 +73,22 @@ export default function HistoryTab({ project }) {
             </thead>
             <tbody>
               {all.map((entry) => (
-                <tr key={entry.id}>
+                <Fragment key={entry.id}>
+                <tr className={`history-row${openId === entry.id ? " open" : ""}`} onClick={() => setOpenId(openId === entry.id ? null : entry.id)}>
                   <td>
-                    <MethodBadge method={entry.method} />
+                    <button
+                      type="button"
+                      className="history-toggle"
+                      aria-expanded={openId === entry.id}
+                      aria-label={`${openId === entry.id ? "Hide" : "Show"} details for ${entry.method} ${pathOf(entry.url)}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setOpenId(openId === entry.id ? null : entry.id);
+                      }}
+                    >
+                      <Icon name="chevron" size="14px" />
+                      <MethodBadge method={entry.method} />
+                    </button>
                   </td>
                   <td className="break mono-cell">{entry.url.replace(/^https?:\/\/[^/]+/, "")}</td>
                   <td>
@@ -81,6 +99,14 @@ export default function HistoryTab({ project }) {
                     {timeAgo(entry.createdAt)}
                   </td>
                 </tr>
+                {openId === entry.id && (
+                  <tr className="history-detail-row">
+                    <td colSpan={5}>
+                      <HistoryDetail entry={entry} projectId={project.id} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               ))}
             </tbody>
           </table>

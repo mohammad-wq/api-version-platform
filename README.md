@@ -42,6 +42,8 @@ After that, the daily loop is: **edit the document → `avp publish`**. If the d
 - `.avp/`: local state (versions, request history, cloud sign-in). It ignores itself in git, so you never edit your `.gitignore`.
 - `API.md`: only when your project has no API document yet. If `README.md`, `API.md`, `docs/API.md` or `docs/README.md` already documents endpoints, that file is used and nothing is written.
 
+You can run `avp init` again at any time: an existing `avp.config.php` is left unchanged (only `--force` rewrites it), and `avp init --readme=docs/api.md` changes just the `readme` setting in it, keeping the rest of your configuration.
+
 ## Writing your API document
 
 The document is plain Markdown. Start from the template (`avp template --output=API.md`) and replace the examples. The essentials:
@@ -74,7 +76,7 @@ The full format and every warning code are in [docs/FORMAT.md](docs/FORMAT.md). 
 
 ## Publishing to the cloud
 
-The cloud platform is the hosted version of this tool (default `https://qa.erpsite.org.pk/test_avp/`). You need an account on it; the package only signs in.
+The cloud platform is the hosted version of this tool. You need an account on it; the package only signs in.
 
 ### From the terminal
 
@@ -98,11 +100,11 @@ Other commands: `avp logout` forgets the sign-in. Your sign-in is saved in `.avp
 
 **Scripts and CI.** Set `AVP_CLOUD_EMAIL` and `AVP_CLOUD_PASSWORD` and `avp publish` signs in by itself (passwords are never accepted as command-line options). Piped input also works: `printf 'me@x.com\nsecret\n' | avp login`.
 
-Use another server with `avp login --url=https://your-host/app/`, `cloud.url` in `avp.config.php`, or `AVP_CLOUD_URL`.
+Running your own copy of the platform? Point the package at it with `cloud.url` in `avp.config.php` or the `AVP_CLOUD_URL` variable.
 
 ### From the web UI
 
-Open the **Cloud** tab in `avp serve`: sign in (the eye icon shows or hides the password), pick a local version and a cloud project (or create one), and click **Publish to cloud**. The same tab lists your cloud projects and their versions, and **Import** copies a cloud version into your local project.
+Open the **Cloud** tab in `avp serve`: sign in (the eye icon shows or hides the password), pick a local version, and click **Publish to cloud**. Like `avp publish`, it publishes to the cloud project named after your project (created if it does not exist yet). A version name the cloud project already has is refused; give the cloud version another name.
 
 ## Command reference
 
@@ -115,7 +117,7 @@ avp migrate [--readme=PATH] [--write]
 avp version create <label> [--note=TEXT] [--readme=PATH] [--allow-unchanged] [--ci]
 avp version list [--json]
 avp version show <label> [--format=json|openapi|markdown]
-avp login [--url=URL] [--email=EMAIL]
+avp login [--email=EMAIL]
 avp logout
 avp publish [label] [--note=TEXT] [--project=NAME]
 avp template [--output=PATH] [--force]
@@ -125,8 +127,9 @@ avp --version
 - `avp` with no command starts the server. Every command accepts `--config=PATH`. Options take `--name=value` or `--name value`; unknown options are reported.
 - `serve` uses port 8080 and moves to the next free port if it is busy (unless you chose the port with `--port`, `AVP_PORT` or the config). `--open` opens the browser. A non-loopback `--host` (like `0.0.0.0`) is refused unless you also pass `--i-know-what-i-am-doing`.
 - `check` lists parser warnings without saving anything. `--ci` (on `check`, `status` and `version create`) exits 1 when there are warnings, except the `LEGACY_FORMAT` notice.
-- `init --readme=PATH` pins the API document in `avp.config.php` (useful when both `README.md` and `API.md` contain endpoints).
-- Version labels are 1–50 characters, in the CLI and the UI alike.
+- `init --readme=PATH` pins the API document in `avp.config.php` (useful when both `README.md` and `API.md` contain endpoints). On a project that already has a config it updates only that one setting.
+- Version labels are 1–50 characters, in the CLI and the UI alike. Line breaks and other control characters are refused; letters, digits, spaces, dots, slashes and emoji are fine.
+- The cloud limits a version note to 255 characters and a project name to 255 characters. `avp publish` and the Cloud tab refuse longer values (and a blank `--project`) before anything is created or sent.
 
 `avp status` works like `git status` for your document:
 
@@ -162,9 +165,9 @@ Keep the `disableProcessTimeout` line (Composer otherwise stops scripts after 30
 
 - **README banner**: when your document changes, it shows what changed (endpoints added, removed, changed) and saves a new version in one click.
 - **Versions**: upload or paste Markdown or OpenAPI JSON; view, edit, compare and delete versions.
-- **Test APIs**: send requests using environments (base URLs) you define. Requests go through the local PHP server, so CORS does not apply. Redirects are followed (at most 5) but never from a public host into a private address.
-- **Cloud**: sign in, publish, browse and import (see above).
-- **History**: the requests you sent from the tester, with a Clear button.
+- **Test APIs**: send requests using environments (base URLs) you define. Requests go through the local PHP server, so CORS does not apply. Redirects are followed (at most 5) but never from a public host into a private address. The **Sign in** button reads your README's login call: a POST whose Request JSON has a password field (a path with `login` or `sign-in`, marked `Auth: false`, is found fastest) and shows exactly the fields you documented; if no login call is found it offers an empty JSON body to fill in. For a QA or internal server with a self-signed certificate, turn on **Skip TLS certificate check** in that environment's settings (off by default, applied only to that environment's URLs).
+- **Cloud**: sign in and publish (see above).
+- **History**: every request you try from the tester, newest first, with a Clear button: successful calls, 4xx and 5xx answers, calls that got no response, and calls the tester refused (invalid URL, unsupported method, its own address, a blocked redirect), each with the reason. Sign-in calls are listed too. Only method, URL (secret-looking query values replaced), status, time and the reason are stored; the newest 200 are kept.
 
 Versions made from your document (CLI, `publish` or the banner) keep the exact Markdown and move the `avp status` baseline. Versions imported or edited in the UI store OpenAPI only and do not.
 
@@ -182,13 +185,10 @@ return [
         'host' => '127.0.0.1',
         // 'port' => 8080,                    // pin the port (no automatic fallback)
     ],
-    'cloud' => [
-        'url' => 'https://qa.erpsite.org.pk/test_avp/',
-    ],
 ];
 ```
 
-With `readme` set to `null` (or no config file), the first of `README.md`, `API.md`, `docs/API.md`, `docs/README.md` that contains endpoints is used. Relative paths resolve from the config file's folder, or the project root when there is no config. Environment variables override the file: `AVP_README_PATH`, `AVP_STORAGE_PATH`, `AVP_HOST`, `AVP_PORT`, `AVP_CLOUD_URL`; `AVP_CLOUD_EMAIL` and `AVP_CLOUD_PASSWORD` supply the cloud sign-in.
+With `readme` set to `null` (or no config file), the first of `README.md`, `API.md`, `docs/API.md`, `docs/README.md` that contains endpoints is used. Relative paths resolve from the config file's folder, or the project root when there is no config. The hosted platform that `avp publish` uses is built in; set `cloud.url` only for a self-hosted copy. Environment variables override the file: `AVP_README_PATH`, `AVP_STORAGE_PATH`, `AVP_HOST`, `AVP_PORT`, `AVP_CLOUD_URL`; `AVP_CLOUD_EMAIL` and `AVP_CLOUD_PASSWORD` supply the cloud sign-in.
 
 ## Troubleshooting
 
@@ -196,7 +196,10 @@ With `readme` set to `null` (or no config file), the first of `README.md`, `API.
 - **`MISSING: No API document found`.** Run `avp init` (creates `API.md`), or set `paths.readme` in `avp.config.php`.
 - **`Not signed in` / `Your cloud sign-in expired`.** Run `avp login` (or just `avp publish`, which asks). In a script, set `AVP_CLOUD_EMAIL` and `AVP_CLOUD_PASSWORD`.
 - **`Version 'v1.0.0' already exists in the cloud project`.** Publish under another name (`avp publish v1.1.0`), or edit the document and run `avp publish` to get the next free label.
-- **`Could not reach the cloud server` / SSL error.** Check the URL (`avp login --url=...`). On Windows, PHP may lack a CA bundle: set `openssl.cafile` in `php.ini`.
+- **`Could not reach the cloud server` / SSL error.** Check your connection. On Windows, PHP may lack a CA bundle: set `openssl.cafile` in `php.ini`.
+- **Test APIs says `the TLS certificate of <host> could not be verified`.** The server's certificate is self-signed, expired or unknown to PHP. For a QA or internal server, open the environment's settings and turn on **Skip TLS certificate check**. If every HTTPS site fails, fix `openssl.cafile` in `php.ini`.
+- **The whole web UI freezes for a few seconds while a request is in flight (Windows).** PHP's built-in server answers one request at a time on Windows (it cannot run workers there), so while the tester waits for a slow API nothing else in the UI responds. To keep that short, the tester waits at most 15 seconds for an answer (25 seconds with redirects) on Windows; on Linux and macOS it waits up to 30 seconds per request and the UI keeps working. The tester also refuses to call this tool's own address, which would wait for itself.
+- **The Sign-in button shows an empty `{}` body or no fields.** No login call was found in the README. Document it as a POST with a password field in its Request JSON (see [docs/FORMAT.md](docs/FORMAT.md)), save a new version, and reload; the tester uses the latest saved version, not the file on disk.
 - **The password is visible when typing.** Hiding it needs a real terminal (PowerShell or `cmd.exe` on Windows, any Unix shell); in editors that run commands without a terminal it falls back to visible input. Use the environment variables there.
 - **`Cannot ask for "Email": there is no terminal to type in`.** You ran `avp` through a Composer script or a CI job. Run `vendor/bin/avp login` in a terminal, or set `AVP_CLOUD_EMAIL` and `AVP_CLOUD_PASSWORD`.
 - **A Composer script ignores your options or says `The "--note" option does not exist`.** Put `--` after the script name, or run `vendor/bin/avp` directly.

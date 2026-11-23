@@ -57,6 +57,10 @@ smoke($check['strict'] === true && $check['ok'] === false && count($check['error
 $migrated = Migrator::migrate($legacy);
 smoke(strpos($migrated, "---\navp: 1\n") === 0 && Migrator::migrate($migrated) === $migrated, 'Migrator adds the header and is idempotent');
 
+$shop = "---\navp: 1\ntitle: Shop\n---\n\n### GET `/users/{id}`\nA.\n\n### GET `/orders/{id}`\nB.\n\n### DELETE `/users/{id}`\nC.\n";
+$shopResult = MarkdownOpenApiParser::parse($shop);
+smoke($shopResult['statistics']['endpoints'] === 3 && $shopResult['warnings'] === [], 'headings that share a last path segment stay separate endpoints');
+
 $crlf = MarkdownOpenApiParser::parse(str_replace("\n", "\r\n", $template));
 smoke($crlf['statistics']['endpoints'] === 5, 'CRLF line endings parse the same');
 $cp1252 = MarkdownOpenApiParser::parse("# T\n\n## U \xE2\x80\x94 `u/`\n\n| Method | Endpoint | Description |\n|---|---|---|\n| GET | `a.php` | caf\xE9 |\n");

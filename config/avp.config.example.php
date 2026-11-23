@@ -16,8 +16,8 @@ return [
         'storage' => '.avp',
     ],
     'cloud' => [
-        // The hosted platform that `Publish to cloud` in the UI signs in to.
-        'url' => 'https://qa.erpsite.org.pk/test_avp/',
+        // `avp publish` and the Cloud tab use the hosted platform that is built in. Set 'url' only for a self-hosted copy:
+        // 'url' => 'https://your-platform.example/app/',
     ],
     'server' => [
         'host' => '127.0.0.1',

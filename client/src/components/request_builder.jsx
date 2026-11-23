@@ -376,7 +376,7 @@ export function RequestBuilder({ project, apiToken, endpoint, locked = false, lo
         )}
 
         <div className="rb-send">
-          <button className="btn btn-primary" disabled={locked || busy || Boolean(environmentError) || missing.length > 0 || missingHeaders.length > 0 || missingFormFields.length > 0} title={locked ? lockedReason : environmentError ?? undefined}>
+          <button className="btn btn-primary" disabled={locked || busy || isMultipart || Boolean(environmentError) || missing.length > 0 || missingHeaders.length > 0 || missingFormFields.length > 0} title={locked ? lockedReason : isMultipart ? "File uploads (multipart/form-data) are not supported by the PHP request runner." : environmentError ?? undefined}>
             {locked ? (
               <>
                 <Icon name="lock" /> Call disabled

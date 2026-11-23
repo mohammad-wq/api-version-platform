@@ -135,31 +135,59 @@ final class Server
      * Sets a project up in one step: avp.config.php, the self-ignoring .avp/ state folder and,
      * when the project has no API document yet, API.md from the bundled template.
      *
+     * Safe to run again: an existing avp.config.php is left alone (only `--force` rewrites it), and `--readme` on an
+     * existing config changes just its `'readme'` entry, keeping every other setting and comment.
+     *
      * @param string|null $readme Pins this file as the API document (in avp.config.php) instead of auto-detecting one
-     * @return array{config: string, state: string, document: string, documentCreated: bool}
+     * @return array{config: string, configAction: string, state: string, document: string, documentCreated: bool, warnings: list<string>}
+     *         configAction is created, overwritten, updated (readme entry only) or unchanged
      */
     public static function init(string $projectRoot, bool $force = false, ?string $readme = null): array
     {
         $projectRoot = rtrim($projectRoot, '/\\');
         $target = $projectRoot . DIRECTORY_SEPARATOR . Config::FILE_NAME;
-        if (is_file($target) && !$force) {
-            throw new \RuntimeException("{$target} already exists (use --force to overwrite).");
-        }
+        $configExists = is_file($target);
 
         $stateDir = $projectRoot . DIRECTORY_SEPARATOR . '.avp';
         if (file_exists($stateDir) && !is_dir($stateDir)) {
             throw new \RuntimeException("{$stateDir} exists but is not a folder; remove or rename it and run init again.");
         }
 
-        if ($readme !== null && !is_file(Config::absolute($projectRoot, $readme))) {
+        $warnings = [];
+        $readmeMissing = $readme !== null && !is_file(Config::absolute($projectRoot, $readme));
+        if ($readmeMissing && (!$configExists || $force)) {
             throw new \RuntimeException("--readme file not found: " . Config::absolute($projectRoot, $readme));
         }
-        $template = file_get_contents(self::packageRoot() . '/config/avp.config.example.php');
-        if ($template !== false && $readme !== null) {
-            $template = str_replace("'readme' => null,", "'readme' => " . var_export(str_replace('\\', '/', $readme), true) . ',', $template);
-        }
-        if ($template === false || @file_put_contents($target, $template) === false) {
-            throw new \RuntimeException("Could not write {$target}.");
+
+        if ($configExists && !$force) {
+            if ($readme === null) {
+                $configAction = 'unchanged';
+            } else {
+                // Change only the `'readme' => ...,` line: the user's other settings and comments stay as they are.
+                $text = (string) file_get_contents($target);
+                $replacement = "'readme' => " . var_export(str_replace('\\', '/', $readme), true) . ',';
+                $count = 0;
+                $updated = preg_replace_callback('/^([ \t]*)\'readme\'[ \t]*=>[ \t]*[^,\r\n]*,/m', static fn (array $m): string => $m[1] . $replacement, $text, 1, $count);
+                if ($updated === null || $count !== 1) {
+                    throw new \RuntimeException("Could not find the 'readme' setting in {$target}. Set paths.readme there by hand, or run `avp init --force --readme=...` to rewrite the file.");
+                }
+                if ($updated !== $text && @file_put_contents($target, $updated) === false) {
+                    throw new \RuntimeException("Could not write {$target}.");
+                }
+                $configAction = 'updated';
+                if ($readmeMissing) {
+                    $warnings[] = 'Warning: ' . Config::absolute($projectRoot, $readme) . ' does not exist yet; create it before running other commands.';
+                }
+            }
+        } else {
+            $template = file_get_contents(self::packageRoot() . '/config/avp.config.example.php');
+            if ($template !== false && $readme !== null) {
+                $template = str_replace("'readme' => null,", "'readme' => " . var_export(str_replace('\\', '/', $readme), true) . ',', $template);
+            }
+            if ($template === false || @file_put_contents($target, $template) === false) {
+                throw new \RuntimeException("Could not write {$target}.");
+            }
+            $configAction = $configExists ? 'overwritten' : 'created';
         }
         if (!is_dir($stateDir) && !@mkdir($stateDir, 0775, true) && !is_dir($stateDir)) {
             throw new \RuntimeException("Could not create {$stateDir}.");
@@ -181,6 +209,6 @@ final class Server
                 $created = true;
             }
         }
-        return ['config' => $target, 'state' => $stateDir, 'document' => $document, 'documentCreated' => $created];
+        return ['config' => $target, 'configAction' => $configAction, 'state' => $stateDir, 'document' => $document, 'documentCreated' => $created, 'warnings' => $warnings];
     }
 }

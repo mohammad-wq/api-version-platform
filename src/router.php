@@ -13,8 +13,24 @@ require_once __DIR__ . '/autoload.php';
 ini_set('display_errors', '0');
 ini_set('log_errors', '1');
 
+// The tool has no authentication and is meant for the local machine only: do not let other sites frame or sniff it,
+// and do not announce the PHP version.
+header_remove('X-Powered-By');
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: DENY');
+header("Content-Security-Policy: frame-ancestors 'none'");
+header('Referrer-Policy: no-referrer');
+
 $uiDir = realpath(__DIR__ . '/../resources/ui');
 $path = rawurldecode(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?: '/');
+
+// A NUL byte in a path (/%00, /a%00.js) makes realpath() throw: answer it like any other missing file.
+if (str_contains($path, "\0")) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'Not found.';
+    return true;
+}
 
 /** @return array{0: VersionService, 1: Storage, 2: string, 3: string, 4: string} service, storage, project root, README path, cloud URL */
 function avpServices(): array
@@ -88,5 +104,8 @@ if ($index === null || !is_file($index)) {
     return true;
 }
 header('Content-Type: text/html; charset=utf-8');
-readfile($index);
+// The page's own script sets <base> at runtime, which is too late for the browser's preload scanner: on a deep link such as
+// /projects/1 it has already asked for /projects/assets/... (a 404). A static <base> first in <head> makes it ask for /assets/....
+$html = (string) file_get_contents($index);
+echo preg_replace('/<head(\s[^>]*)?>/i', '$0<base href="/">', $html, 1);
 return true;

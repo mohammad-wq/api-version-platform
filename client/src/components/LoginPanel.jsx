@@ -7,7 +7,10 @@ import ApiAuthSettings from "./ApiAuthSettings.jsx";
 import { environmentStatus } from "./EnvironmentSwitcher.jsx";
 import { baseUrlError, environmentLabel } from "../lib/project-environments.js";
 
-const DEFAULT_LOGIN = '{\n  "username": "",\n  "password": ""\n}';
+// Shown only when the README documents no login call: an empty body to fill in, not a guess at field names.
+const DEFAULT_LOGIN = "{}";
+// What older versions pre-filled; a saved draft that still holds it is replaced by the empty body.
+const OLD_DEFAULT_LOGIN = '{\n  "username": "",\n  "password": ""\n}';
 
 const maskToken = (token) => (token.length > 18 ? `${token.slice(0, 10)}…${token.slice(-6)}` : "••••••");
 
@@ -55,6 +58,10 @@ export default function LoginPanel({ project, session, open, onOpenChange, onSav
     sanitize: (text) => maskSecretsInJson(text, DEFAULT_LOGIN),
   });
   const [showSettings, setShowSettings] = useState(false);
+  useEffect(() => {
+    if (payload === OLD_DEFAULT_LOGIN) setPayload(templateFor(fields));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -187,7 +194,7 @@ export default function LoginPanel({ project, session, open, onOpenChange, onSav
                 <Notice kind="warn">Set a valid base URL for {envName} before signing in.</Notice>
               ) : !configured ? (
                 <Notice kind="warn">
-                  The README does not document a public login endpoint. Set the login path under Login settings below.
+                  No login call was found in the README. Document it as a POST whose Request JSON has a password field (a path with login or sign-in, marked Auth: false, is found fastest), or set the login path and body below.
                 </Notice>
               ) : null}
 

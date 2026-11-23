@@ -107,6 +107,18 @@ check($first['id'] === 1 && $service->status()['state'] === 'clean', 'create mak
 check(throwsException(fn () => $service->create('v1.0.0', '', true), OverflowException::class), 'labels are unique');
 check(throwsException(fn () => $service->create('V1.0.0', '', true), OverflowException::class), 'labels are unique ignoring case');
 check($service->nextLabel() === 'v1.0.1', 'next label bumps the patch number');
+// Labels: control characters are refused, ordinary punctuation, unicode and spaces are fine, and the duplicate message is one sentence everywhere.
+foreach (["v3\nX", "v\x07", "a\tb", "\u{FEFF}v1", "bad\xC3"] as $badLabel) {
+    check(throwsException(fn () => VersionService::label($badLabel), InvalidArgumentException::class), 'a label with control or invalid characters is refused: ' . json_encode($badLabel, JSON_INVALID_UTF8_SUBSTITUTE));
+}
+check(VersionService::label("  v1/2 \u{00E9}\u{4E16}  ") === "v1/2 \u{00E9}\u{4E16}", 'slashes, spaces and unicode letters are allowed and the label is trimmed');
+check(VersionService::label(str_repeat('a', 50)) === str_repeat('a', 50) && throwsException(fn () => VersionService::label(str_repeat('a', 51)), InvalidArgumentException::class), 'labels are limited to 50 characters');
+try {
+    $service->create('V1.0.0', '', true);
+    check(false, 'duplicate label must throw');
+} catch (OverflowException $e) {
+    check($e->getMessage() === "Version 'V1.0.0' already exists.", 'the duplicate-label message is "Version \'<label>\' already exists."');
+}
 file_put_contents($readme, "\n- changed\n", FILE_APPEND);
 check($service->status()['state'] === 'modified', 'an edited document is modified');
 $summary = $service->workingCopySummary();
@@ -120,9 +132,30 @@ check(throwsException(fn () => $service->update($imported['id'], 'v1.0.0', '', n
 $service->delete($imported['id']);
 check($service->get('v2-renamed') === null && throwsException(fn () => $service->delete($imported['id']), OutOfBoundsException::class), 'delete removes a version once');
 
+// avp init is safe to run again and --readme changes only the readme entry
+$initDir = tempDir();
+$first = Mohammad\ApiVersionPlatform\Server::init($initDir);
+check($first['configAction'] === 'created' && is_file($initDir . '/avp.config.php') && is_dir($initDir . '/.avp') && $first['documentCreated'] === true, 'init creates the config, .avp/ and API.md');
+$customConfig = str_replace("// 'port' => 8080,", "'port' => 8123,", (string) file_get_contents($initDir . '/avp.config.php')) . "\n// my own note\n";
+file_put_contents($initDir . '/avp.config.php', $customConfig);
+$again = Mohammad\ApiVersionPlatform\Server::init($initDir);
+check($again['configAction'] === 'unchanged' && file_get_contents($initDir . '/avp.config.php') === $customConfig && $again['documentCreated'] === false, 'running init again leaves the config untouched and does not throw');
+unlink($initDir . '/API.md');
+check(Mohammad\ApiVersionPlatform\Server::init($initDir)['documentCreated'] === true && is_file($initDir . '/API.md'), 'running init again still recreates a missing API.md');
+mkdir($initDir . '/docs');
+file_put_contents($initDir . '/docs/api.md', "# X\n");
+$pinned = Mohammad\ApiVersionPlatform\Server::init($initDir, false, 'docs/api.md');
+$pinnedText = (string) file_get_contents($initDir . '/avp.config.php');
+check($pinned['configAction'] === 'updated' && str_contains($pinnedText, "'readme' => 'docs/api.md',") && str_contains($pinnedText, "'port' => 8123,") && str_contains($pinnedText, '// my own note'), 'init --readme on an existing config changes only the readme entry');
+check(Mohammad\ApiVersionPlatform\Server::init($initDir, false, 'docs/other.md')['warnings'] !== [], 'init --readme on an existing config warns when the file does not exist yet');
+check(throwsException(fn () => Mohammad\ApiVersionPlatform\Server::init(tempDir(), false, 'nope.md'), RuntimeException::class), 'a fresh init still refuses a --readme file that does not exist');
+file_put_contents($initDir . '/avp.config.php', "<?php\nreturn [];\n");
+check(throwsException(fn () => Mohammad\ApiVersionPlatform\Server::init($initDir, false, 'docs/api.md'), RuntimeException::class), 'init --readme explains when the config has no readme entry to update');
+check(Mohammad\ApiVersionPlatform\Server::init($initDir, true)['configAction'] === 'overwritten' && !str_contains((string) file_get_contents($initDir . '/avp.config.php'), '8123'), 'init --force still rewrites the whole file');
+
 // Cloud URL rules
 check(Cloud::isCleartext('http://192.168.0.5/x') && !Cloud::isCleartext('https://a.b/') && !Cloud::isCleartext('http://localhost:8080/') && !Cloud::isCleartext('http://127.0.0.1/'), 'plain http to another machine is flagged as cleartext');
-check(Cloud::apiBase('https://qa.erpsite.org.pk/test_avp/') === 'https://qa.erpsite.org.pk/test_avp/backend', 'a site URL gets /backend');
+check(Cloud::apiBase('https://platform.example/app/') === 'https://platform.example/app/backend', 'a site URL gets /backend');
 check(Cloud::apiBase('https://x.test/app/backend/') === 'https://x.test/app/backend', 'a backend URL is kept');
 check(throwsException(fn () => Cloud::apiBase('ftp://x'), InvalidArgumentException::class), 'only http(s) cloud URLs are accepted');
 $cloud = new Cloud($projectDir . '/.avp');
